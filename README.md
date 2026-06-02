@@ -1,5 +1,10 @@
 # falsegreen
 
+[![CI](https://github.com/vinicq/falsegreen/actions/workflows/ci.yml/badge.svg)](https://github.com/vinicq/falsegreen/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/falsegreen.svg)](https://pypi.org/project/falsegreen/)
+[![Python](https://img.shields.io/pypi/pyversions/falsegreen.svg)](https://pypi.org/project/falsegreen/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Find unit tests that give false positives: tests that stay green without
 protecting anything, and tests that pass while asserting the **wrong** expected
 value.
@@ -88,4 +93,6 @@ Turn codes off globally with `--disable C6,C2b`.
 
 ## License
 
-Apache-2.0.
+MIT. See [LICENSE](LICENSE). Community guidelines:
+[Code of Conduct](CODE_OF_CONDUCT.md), [Contributing](CONTRIBUTING.md),
+[Security](SECURITY.md).

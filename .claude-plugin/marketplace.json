@@ -12,6 +12,8 @@
     {
       "name": "falsegreen",
       "source": "./",
+      "category": "testing",
+      "keywords": ["testing", "pytest", "test-quality", "false-positive", "code-review"],
       "description": "Audit unit tests for false positives: green tests that protect nothing, and tests that pass while asserting the wrong expected value."
     }
   ]

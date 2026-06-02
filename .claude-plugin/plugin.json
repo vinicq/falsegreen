@@ -5,6 +5,7 @@
   "author": { "name": "Vinicius Queiroz", "url": "https://github.com/vinicq" },
   "homepage": "https://github.com/vinicq/falsegreen",
   "repository": { "url": "https://github.com/vinicq/falsegreen" },
-  "license": "Apache-2.0",
+  "license": "MIT",
+  "keywords": ["testing", "pytest", "test-quality", "false-positive", "code-review"],
   "skills": ["./skills/falsegreen"]
 }

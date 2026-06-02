@@ -41,8 +41,12 @@ Run the bundled scanner (works whether or not the package is pip-installed):
 python "${CLAUDE_SKILL_DIR}/scripts/scan.py" --json tests/
 ```
 
-If the package is installed (`pip install falsegreen`), the `falsegreen` CLI and
-`python -m falsegreen` are equivalent. Useful flags:
+`${CLAUDE_SKILL_DIR}` is set by Claude Code. On another Agent Skills client that
+does not define it, install the package (`pip install falsegreen`) and run the
+`falsegreen` CLI or `python -m falsegreen` instead. They are equivalent.
+
+If the package is installed, the `falsegreen` CLI and `python -m falsegreen` are
+also equivalent here. Useful flags:
 
 ```
 falsegreen tests/            # scan a folder or file
