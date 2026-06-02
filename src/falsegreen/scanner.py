@@ -1,0 +1,681 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+falsegreen: deterministic false-positive scanner for Python/pytest tests.
+
+Parses test files with the AST (no code execution) and flags the mechanical
+patterns that make a test pass without protecting anything. Each finding maps
+to a case from the guide (docs/guide.md).
+
+Cases 12 (re-implementing the production logic inside the test) and 18 (the
+expected value contradicts the intended behavior) are NOT statically detectable.
+They belong to the semantic pass of the falsegreen skill, which compares the
+test's expected value against the INTENDED behavior (spec, contract, then code),
+not against whatever the code returns today. The scanner owns what the structure
+can prove.
+
+Output:
+  - readable text (default) or JSON (--json)
+  - exit code: 0 clean, 10 low-confidence only, 20 high-confidence present
+
+Suppress a finding inline with a comment on its line:
+  assert total == 0.3   # falsegreen: ignore        (silences every code)
+  assert total == 0.3   # falsegreen: ignore[C8]    (silences only C8)
+
+Usage:
+  falsegreen [paths...]         # files/dirs; no args = scan cwd
+  falsegreen --staged           # only test files staged in git
+  falsegreen --json             # JSON output
+  falsegreen --disable C6,C2b   # turn off specific codes
+"""
+
+import argparse
+import ast
+import json
+import os
+import re
+import subprocess
+import sys
+
+# ---------------------------------------------------------------------------
+# Case catalog (mirrors the guide). code -> (title, confidence)
+# confidence: "high" => blocks the commit; "low" => warns only.
+# ---------------------------------------------------------------------------
+CASES = {
+    "C1":  ("assert inside if/for that may never run", "low"),
+    "C2":  ("test with no check at all (empty body)", "high"),
+    "C2b": ("test calls things but checks nothing", "low"),
+    "C3":  ("assert inside try whose except swallows the error", "high"),
+    "C4":  ("test is not collected by pytest (silently never runs)", "high"),
+    "C4b": ("test class has __init__ (not collected unless subclassed)", "low"),
+    "C5":  ("always-true check (assert True / tuple / or True)", "high"),
+    "C6":  ("weak check (only verifies that something came back)", "low"),
+    "C7":  ("compares a thing to itself (always matches)", "high"),
+    "C8":  ("exact equality on a float (fails on rounding, not bugs)", "low"),
+    "C9":  ("pytest.raises too broad (accepts any error)", "low"),
+    "C13": ("mock assertion misspelled / not called (always passes)", "high"),
+    "C13b":("patch without autospec (lets mock typos pass)", "low"),
+    "C14": ("golden/snapshot generated from the output itself", "low"),
+    "C16": ("result depends on time, randomness or a fixed sleep", "low"),
+    "C17": ("skip inside a broad except hides a real failure", "high"),
+    "CC":  ("commented-out assert (check switched off)", "low"),
+}
+
+# Real mock API assertion methods.
+MOCK_ASSERTS_VALID = {
+    "assert_called", "assert_called_once", "assert_called_with",
+    "assert_called_once_with", "assert_any_call", "assert_has_calls",
+    "assert_not_called",
+}
+# Names that look like a mock assertion but do not exist (always pass).
+MOCK_FALSE_NAMES = {
+    "called_once", "called_once_with", "called_with",
+    "assert_not_called_once", "assert_called_twice",
+}
+# Callables that produce a mock. A name assigned from one of these is a mock.
+MOCK_FACTORIES = {
+    "Mock", "MagicMock", "AsyncMock", "NonCallableMock", "NonCallableMagicMock",
+    "create_autospec", "patch",
+}
+# Prefixes that mark a helper, not a forgotten test. Kept narrow so common test
+# names (run_/do_/get_) are not silently exempted.
+HELPER_PREFIXES = (
+    "assert", "check", "verify", "ensure", "make", "build",
+    "setup", "teardown", "helper", "fixture", "_",
+)
+
+IGNORED_DIRS = {
+    ".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules",
+    "__pycache__", ".tox", ".mypy_cache", ".pytest_cache", "build",
+    "dist", "site-packages", ".eggs",
+}
+
+IGNORE_RE = re.compile(r"#\s*falsegreen:\s*ignore(?:\[([A-Za-z0-9, ]+)\])?")
+
+
+# ---------------------------------------------------------------------------
+# Test file discovery
+# ---------------------------------------------------------------------------
+def is_test_file(path):
+    name = os.path.basename(path)
+    if not name.endswith(".py"):
+        return False
+    if name.startswith("test_") or name.endswith("_test.py"):
+        return True
+    parts = {p.lower() for p in path.replace("\\", "/").split("/")}
+    return "tests" in parts or "test" in parts
+
+
+def discover(paths):
+    files = []
+    for root in paths:
+        if os.path.isfile(root):
+            if root.endswith(".py"):
+                files.append(root)
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
+            for f in filenames:
+                full = os.path.join(dirpath, f)
+                if is_test_file(full):
+                    files.append(full)
+    return sorted(set(files))
+
+
+def staged_files():
+    try:
+        out = subprocess.check_output(
+            ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"],
+            stderr=subprocess.DEVNULL,
+        ).decode("utf-8", "replace")
+    except Exception:
+        return []
+    res = []
+    for line in out.splitlines():
+        line = line.strip()
+        if line and is_test_file(line) and os.path.isfile(line):
+            res.append(line)
+    return res
+
+
+# ---------------------------------------------------------------------------
+# AST helpers
+# ---------------------------------------------------------------------------
+def children_no_nesting(node):
+    """Walk descendants without entering nested def/class/lambda bodies."""
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                              ast.ClassDef, ast.Lambda)):
+            continue
+        yield child
+        yield from children_no_nesting(child)
+
+
+def dotted_name(node):
+    """foo.bar.baz -> 'foo.bar.baz' for Attribute/Name; otherwise ''."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = dotted_name(node.value)
+        return (base + "." + node.attr) if base else node.attr
+    return ""
+
+
+def root_name(node):
+    """Leftmost Name of an attribute/call chain. 'a.b.c()' -> 'a'."""
+    while True:
+        if isinstance(node, ast.Attribute):
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        else:
+            break
+    return node.id if isinstance(node, ast.Name) else ""
+
+
+def is_call_to(node, *names):
+    if not isinstance(node, ast.Call):
+        return False
+    target = dotted_name(node.func)
+    return any(target == n or target.endswith("." + n) for n in names)
+
+
+def constant_truthy(node):
+    if isinstance(node, ast.Constant):
+        return bool(node.value)
+    if node.__class__.__name__ in ("Num", "Str", "Bytes", "NameConstant"):
+        return bool(getattr(node, "n", getattr(node, "s", getattr(node, "value", False))))
+    return False
+
+
+def assert_always_true(test):
+    if isinstance(test, ast.Tuple) and len(test.elts) > 0:
+        return True
+    if constant_truthy(test):
+        return True
+    if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or):
+        return any(constant_truthy(v) for v in test.values)
+    return False
+
+
+def assert_self_compare(test):
+    if isinstance(test, ast.Compare) and len(test.comparators) == 1:
+        if isinstance(test.ops[0], (ast.Eq, ast.Is)):
+            try:
+                return ast.dump(test.left) == ast.dump(test.comparators[0])
+            except Exception:
+                return False
+    return False
+
+
+def _const_value(node):
+    if isinstance(node, ast.Constant):
+        return node.value
+    if node.__class__.__name__ == "Num":
+        return getattr(node, "n", None)
+    return None
+
+
+def assert_weak(test):
+    # Truthiness of something: assert result / assert obj.attr / assert f()
+    if isinstance(test, (ast.Name, ast.Attribute, ast.Subscript, ast.Call)):
+        return "truthiness of a value, not compared to an expected result"
+    if isinstance(test, ast.Compare) and len(test.ops) == 1:
+        op = test.ops[0]
+        right = test.comparators[0]
+        # "x" in str(...): substring search in stringified output
+        if isinstance(op, ast.In):
+            if isinstance(right, ast.Call) and dotted_name(right.func).split(".")[-1] in ("str", "repr", "format"):
+                return "substring search in stringified output, not the exact content"
+            return None
+        # len(x) > 0 / >= 1 / != 0 (only-not-empty). NOT len(x) == N (exact count, good).
+        if isinstance(test.left, ast.Call) and dotted_name(test.left.func).endswith("len"):
+            rv = _const_value(right)
+            if (isinstance(op, ast.Gt) and rv == 0) or (isinstance(op, ast.GtE) and rv == 1) \
+                    or (isinstance(op, ast.NotEq) and rv == 0):
+                return "only checks it is not empty"
+    return None
+
+
+def assert_exact_float(test):
+    if isinstance(test, ast.Compare) and any(isinstance(o, ast.Eq) for o in test.ops):
+        sides = [test.left] + list(test.comparators)
+        for side in sides:
+            if isinstance(side, ast.Constant) and isinstance(side.value, float):
+                return True
+            if side.__class__.__name__ == "Num" and isinstance(getattr(side, "n", None), float):
+                return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Findings
+# ---------------------------------------------------------------------------
+class Finding:
+    __slots__ = ("file", "line", "code", "detail")
+
+    def __init__(self, file, line, code, detail=""):
+        self.file = file
+        self.line = line
+        self.code = code
+        self.detail = detail
+
+    def dict(self):
+        title, conf = CASES[self.code]
+        return {
+            "file": self.file,
+            "line": self.line,
+            "code": self.code,
+            "confidence": conf,
+            "title": title,
+            "detail": self.detail,
+        }
+
+
+def has_assertion(func):
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Assert):
+            return True
+        if isinstance(n, ast.Call):
+            target = dotted_name(n.func)
+            if target.endswith("pytest.raises") or target.endswith("raises"):
+                return True
+            if target.endswith("pytest.fail") or target.endswith("fail"):
+                return True
+            last = target.split(".")[-1]
+            if last in MOCK_ASSERTS_VALID or last.startswith("assert"):
+                return True
+        if isinstance(n, ast.With):
+            for item in n.items:
+                if is_call_to(item.context_expr, "pytest.raises", "raises"):
+                    return True
+    return False
+
+
+def empty_body(func):
+    for stmt in func.body:
+        if isinstance(stmt, ast.Pass):
+            continue
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+            continue
+        if isinstance(stmt, ast.Expr) and stmt.value.__class__.__name__ in ("Str", "Ellipsis"):
+            continue
+        return False
+    return True
+
+
+def makes_any_call(func):
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Call):
+            return True
+    return False
+
+
+def handler_swallows(handler):
+    for stmt in handler.body:
+        if isinstance(stmt, (ast.Pass, ast.Continue)):
+            continue
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+            continue
+        return False
+    return True
+
+
+def handler_broad(handler):
+    if handler.type is None:
+        return True
+    name = dotted_name(handler.type)
+    return name.endswith("Exception") or name.endswith("BaseException")
+
+
+def block_has_assertion(stmts):
+    """True if the block contains a real check, not just any call."""
+    for s in stmts:
+        for sub in ast.walk(s):
+            if isinstance(sub, ast.Assert):
+                return True
+            if isinstance(sub, ast.Call):
+                t = dotted_name(sub.func)
+                if t.endswith("raises") or t.split(".")[-1].startswith("assert"):
+                    return True
+    return False
+
+
+def gather_mock_names(func):
+    """Names within this function that hold a mock (params, @patch, assignments, with-as)."""
+    names = set()
+    args = func.args
+    for a in list(args.args) + list(getattr(args, "kwonlyargs", []) or []):
+        if "mock" in a.arg.lower():
+            names.add(a.arg)
+    if args.vararg and "mock" in args.vararg.arg.lower():
+        names.add(args.vararg.arg)
+
+    # @patch / @patch.object decorators inject a mock as a positional arg (unless
+    # new= is given). Decorators apply bottom-up, so the bottom-most maps to the
+    # first injected param after self/cls.
+    patch_decos = []
+    for d in func.decorator_list:
+        call = d if isinstance(d, ast.Call) else None
+        target = d.func if isinstance(d, ast.Call) else d
+        dn = dotted_name(target)
+        last = dn.split(".")[-1]
+        if last == "patch" or (last == "object" and "patch" in dn):
+            if call and any(kw.arg == "new" for kw in call.keywords):
+                continue  # new= replaces with a real object, no mock injected
+            patch_decos.append(d)
+    if patch_decos:
+        pos = list(args.args)
+        if pos and pos[0].arg in ("self", "cls"):
+            pos = pos[1:]
+        for i in range(len(patch_decos)):
+            if i < len(pos):
+                names.add(pos[i].arg)
+
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call):
+            dn = dotted_name(n.value.func)
+            last = dn.split(".")[-1]
+            if last in MOCK_FACTORIES or "patch" in dn:
+                for t in n.targets:
+                    if isinstance(t, ast.Name):
+                        names.add(t.id)
+        if isinstance(n, ast.With):
+            for item in n.items:
+                ce = item.context_expr
+                if isinstance(ce, ast.Call):
+                    dn = dotted_name(ce.func)
+                    if "patch" in dn or dn.split(".")[-1] in MOCK_FACTORIES:
+                        if isinstance(item.optional_vars, ast.Name):
+                            names.add(item.optional_vars.id)
+    return names
+
+
+def analyze_function(func, file, findings, in_class=False):
+    line = func.lineno
+    mock_names = gather_mock_names(func)
+
+    if not has_assertion(func):
+        if empty_body(func):
+            findings.append(Finding(file, line, "C2"))
+        elif makes_any_call(func):
+            findings.append(Finding(file, line, "C2b",
+                                    "if the check lives in a helper called here, ignore"))
+
+    for n in ast.walk(func):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n is not func:
+            if n.name.startswith("test"):
+                findings.append(Finding(file, n.lineno, "C4",
+                                        "nested test function is not collected"))
+
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Assert):
+            test = n.test
+            if assert_always_true(test):
+                findings.append(Finding(file, n.lineno, "C5"))
+            elif assert_self_compare(test):
+                findings.append(Finding(file, n.lineno, "C7"))
+            else:
+                if assert_exact_float(test):
+                    findings.append(Finding(file, n.lineno, "C8"))
+                weak = assert_weak(test)
+                if weak:
+                    findings.append(Finding(file, n.lineno, "C6", weak))
+
+    for n in children_no_nesting(func):
+        if isinstance(n, (ast.If, ast.For, ast.While)):
+            for sub in ast.walk(n):
+                if isinstance(sub, ast.Assert):
+                    findings.append(Finding(file, sub.lineno, "C1"))
+                    break
+
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Try):
+            body_has_check = block_has_assertion(n.body)
+            for h in n.handlers:
+                skips = any(
+                    is_call_to(c, "pytest.skip", "skip", "skipTest")
+                    for c in ast.walk(h) if isinstance(c, ast.Call)
+                )
+                if skips and handler_broad(h):
+                    findings.append(Finding(file, h.lineno, "C17"))
+                elif handler_swallows(h) and handler_broad(h) and body_has_check:
+                    findings.append(Finding(file, h.lineno, "C3"))
+
+    for n in children_no_nesting(func):
+        # bare assert_* / called* attribute on a mock, missing parentheses
+        if isinstance(n, ast.Expr) and isinstance(n.value, ast.Attribute):
+            attr = n.value.attr
+            if (attr.startswith("assert_") or attr.startswith("called")) \
+                    and root_name(n.value) in mock_names:
+                findings.append(Finding(file, n.lineno, "C13",
+                                        "'%s' used without (): checks nothing" % attr))
+        if isinstance(n, ast.Call):
+            target = dotted_name(n.func)
+            last = target.split(".")[-1]
+            if last in MOCK_FALSE_NAMES and root_name(n.func) in mock_names:
+                findings.append(Finding(file, n.lineno, "C13",
+                                        "'%s' is not part of the mock API" % last))
+            is_patch = last == "patch" or (last == "object" and "patch" in target)
+            if is_patch:
+                kwargs = {kw.arg for kw in n.keywords if kw.arg}
+                if not ({"autospec", "spec", "spec_set"} & kwargs):
+                    findings.append(Finding(file, n.lineno, "C13b"))
+
+    for n in children_no_nesting(func):
+        call = None
+        if isinstance(n, ast.With):
+            for item in n.items:
+                if is_call_to(item.context_expr, "pytest.raises", "raises"):
+                    call = item.context_expr
+        elif isinstance(n, ast.Call) and is_call_to(n, "pytest.raises", "raises"):
+            call = n
+        if call is not None:
+            kwargs = {kw.arg for kw in call.keywords if kw.arg}
+            args = call.args
+            broad = args and dotted_name(args[0]) in ("Exception", "BaseException")
+            if not args:
+                findings.append(Finding(file, n.lineno, "C9", "raises with no error type"))
+            elif broad and "match" not in kwargs:
+                findings.append(Finding(file, n.lineno, "C9", "raises(Exception) without match"))
+
+    has_seed = any(
+        is_call_to(c, "random.seed", "seed", "np.random.seed")
+        for c in ast.walk(func) if isinstance(c, ast.Call)
+    )
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Call):
+            target = dotted_name(n.func)
+            if target.endswith("time.sleep") or target.endswith("sleep"):
+                findings.append(Finding(file, n.lineno, "C16", "fixed sleep"))
+            elif target.endswith("datetime.now") or target.endswith("datetime.today") \
+                    or target.endswith("date.today") or target.endswith("time.time"):
+                findings.append(Finding(file, n.lineno, "C16", "reads the system clock"))
+            elif (target.startswith("random.") or target.endswith("randint")
+                  or target.endswith("choice") or target.endswith("shuffle")) and not has_seed:
+                findings.append(Finding(file, n.lineno, "C16", "randomness without a fixed seed"))
+
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.If) and isinstance(n.test, ast.UnaryOp) \
+                and isinstance(n.test.op, ast.Not):
+            target = n.test.operand
+            checks_exists = is_call_to(target, "exists", "isfile", "is_file") \
+                or (isinstance(target, ast.Attribute) and target.attr in ("exists",))
+            writes = any(
+                is_call_to(c, "write_text", "write_bytes", "write", "dump", "open")
+                for c in ast.walk(n) if isinstance(c, ast.Call)
+            )
+            if checks_exists and writes:
+                findings.append(Finding(file, n.lineno, "C14"))
+
+
+# ---------------------------------------------------------------------------
+# Per-file analysis
+# ---------------------------------------------------------------------------
+def looks_like_loose_test(func):
+    """Out-of-convention function that looks like a forgotten test."""
+    name = func.name.lower()
+    if name.startswith(HELPER_PREFIXES):
+        return False
+    args = func.args
+    n_pos = len(args.args)
+    if n_pos > 0 and args.args[0].arg in ("self", "cls"):
+        n_pos -= 1
+    if n_pos != 0 or args.vararg or args.kwarg or args.kwonlyargs:
+        return False
+    for n in ast.walk(func):
+        if isinstance(n, ast.Assert):
+            return True
+        if isinstance(n, ast.Call) and is_call_to(n, "pytest.raises", "raises"):
+            return True
+    return False
+
+
+def has_fixture_decorator(func):
+    for d in func.decorator_list:
+        target = d.func if isinstance(d, ast.Call) else d
+        if "fixture" in dotted_name(target):
+            return True
+    return False
+
+
+def parse_inline_ignores(source):
+    ignores = {}
+    for i, line in enumerate(source.splitlines(), start=1):
+        m = IGNORE_RE.search(line)
+        if not m:
+            continue
+        codes = m.group(1)
+        if codes:
+            ignores[i] = {c.strip() for c in codes.split(",") if c.strip()}
+        else:
+            ignores[i] = {"*"}
+    return ignores
+
+
+def analyze_file(file):
+    findings = []
+    try:
+        with open(file, "r", encoding="utf-8") as fh:
+            source = fh.read()
+    except Exception:
+        return findings
+    try:
+        tree = ast.parse(source, filename=file)
+    except SyntaxError:
+        return findings
+
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name.startswith("test"):
+                analyze_function(node, file, findings)
+            elif looks_like_loose_test(node) and not has_fixture_decorator(node):
+                findings.append(Finding(file, node.lineno, "C4",
+                                        "'%s' does not start with test_, pytest skips it" % node.name))
+        elif isinstance(node, ast.ClassDef):
+            if node.name.startswith("Test"):
+                has_init = any(
+                    isinstance(m, ast.FunctionDef) and m.name == "__init__"
+                    for m in node.body
+                )
+                if has_init:
+                    findings.append(Finding(file, node.lineno, "C4b",
+                                            "test class with __init__ is collected only if subclassed"))
+                for m in node.body:
+                    if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if m.name.startswith("test"):
+                            analyze_function(m, file, findings, in_class=True)
+
+    for i, line in enumerate(source.splitlines(), start=1):
+        if re.match(r"^\s*#\s*assert\b", line):
+            findings.append(Finding(file, i, "CC"))
+
+    ignores = parse_inline_ignores(source)
+    kept = []
+    for f in findings:
+        spec = ignores.get(f.line)
+        if spec and ("*" in spec or f.code in spec):
+            continue
+        kept.append(f)
+    return kept
+
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+def print_text(findings):
+    if not findings:
+        print("No false-positive patterns found in the analyzed tests.")
+        return
+    highs = [a for a in findings if CASES[a.code][1] == "high"]
+    lows = [a for a in findings if CASES[a.code][1] == "low"]
+
+    def block(title, items):
+        if not items:
+            return
+        print("\n" + title)
+        print("-" * len(title))
+        for a in sorted(items, key=lambda x: (x.file, x.line)):
+            t = CASES[a.code][0]
+            extra = ("  (%s)" % a.detail) if a.detail else ""
+            print("  %s:%d  [%s] %s%s" % (a.file, a.line, a.code, t, extra))
+
+    block("HIGH confidence (almost certainly a false positive)", highs)
+    block("LOW confidence (test smell, confirm by hand or with /falsegreen)", lows)
+
+    print("\nSummary: %d high, %d low." % (len(highs), len(lows)))
+    print("Cases 12 and 18 (copied logic / wrong expected value) need the semantic")
+    print("pass: run /falsegreen so the expected value is checked against intent.")
+
+
+def run(paths, staged=False, disable=None):
+    disable = set(disable or [])
+    if staged:
+        files = staged_files()
+    elif paths:
+        files = discover(paths)
+    else:
+        files = discover(["."])
+
+    findings = []
+    seen = set()
+    for f in files:
+        for a in analyze_file(f):
+            if a.code in disable:
+                continue
+            key = (a.file, a.line, a.code, a.detail)
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append(a)
+    return findings
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="falsegreen",
+                                 description="False-positive scanner for Python tests.")
+    ap.add_argument("paths", nargs="*", help="files or dirs (empty = cwd)")
+    ap.add_argument("--staged", action="store_true", help="only test files staged in git")
+    ap.add_argument("--json", action="store_true", help="JSON output")
+    ap.add_argument("--disable", default="", help="comma-separated case codes to skip (e.g. C6,C2b)")
+    args = ap.parse_args(argv)
+
+    disable = {c.strip() for c in args.disable.split(",") if c.strip()}
+    findings = run(args.paths, staged=args.staged, disable=disable)
+
+    if args.json:
+        print(json.dumps([a.dict() for a in findings], ensure_ascii=False, indent=2))
+    else:
+        print_text(findings)
+
+    has_high = any(CASES[a.code][1] == "high" for a in findings)
+    has_low = any(CASES[a.code][1] == "low" for a in findings)
+    if has_high:
+        return 20
+    if has_low:
+        return 10
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

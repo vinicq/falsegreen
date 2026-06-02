@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check src tests
+      - name: Test
+        run: pytest -q
+      - name: Bundled skill scanner must match the package
+        run: diff -u src/falsegreen/scanner.py skills/falsegreen/scripts/scan.py
+      - name: Self-scan (must flag the demo, must not flag itself)
+        run: |
+          python -m falsegreen skills/falsegreen/examples/bad_tests_sample.py || true
+          python -m falsegreen src tests

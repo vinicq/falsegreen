@@ -1,0 +1,8 @@
+- id: falsegreen
+  name: falsegreen (false-positive scanner)
+  description: Flag unit tests that pass without protecting anything.
+  entry: falsegreen --staged
+  language: python
+  types: [python]
+  pass_filenames: false
+  require_serial: true

@@ -1,0 +1,18 @@
+{
+  "name": "falsegreen",
+  "owner": {
+    "name": "Vinicius Queiroz",
+    "url": "https://github.com/vinicq"
+  },
+  "metadata": {
+    "description": "Find unit tests that give false positives. Deterministic scanner plus a semantic pass that checks the expected value against intended behavior.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "falsegreen",
+      "source": "./",
+      "description": "Audit unit tests for false positives: green tests that protect nothing, and tests that pass while asserting the wrong expected value."
+    }
+  ]
+}

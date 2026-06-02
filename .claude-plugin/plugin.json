@@ -1,0 +1,10 @@
+{
+  "name": "falsegreen",
+  "version": "0.1.0",
+  "description": "Audit unit tests for false positives. Judges the test's expected value against intended behavior (spec/contract), not just what the code returns.",
+  "author": { "name": "Vinicius Queiroz", "url": "https://github.com/vinicq" },
+  "homepage": "https://github.com/vinicq/falsegreen",
+  "repository": { "url": "https://github.com/vinicq/falsegreen" },
+  "license": "Apache-2.0",
+  "skills": ["./skills/falsegreen"]
+}

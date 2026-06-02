@@ -1,0 +1,5 @@
+# Dev / test dependencies. Install with:  pip install -e ".[dev]"
+# Runtime has NO dependencies (standard library only), so there is no
+# requirements.txt: `pip install falsegreen` pulls nothing else.
+pytest>=7
+ruff>=0.5
