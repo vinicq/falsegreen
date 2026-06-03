@@ -40,8 +40,8 @@ false negative, show the bad test that slipped through. Use the demo file
 
 ## Adding or changing a detection rule
 
-This is the most common contribution. A rule touches four places, and the pull
-request needs all four:
+This is the most common contribution. A rule touches up to five places, and the
+pull request needs all that apply:
 
 1. **Logic** in `src/falsegreen/scanner.py`. Decide HIGH vs LOW. The rule of
    thumb: HIGH only if a legitimate test can almost never trigger it, because
@@ -53,6 +53,11 @@ request needs all four:
 4. **Tests** in `tests/test_scanner.py`: one test proving the rule fires on the
    bad pattern, and at least one proving it does NOT fire on the legitimate
    look-alike. The second test matters more than the first.
+5. **Skill prose** in `skills/falsegreen/SKILL.md`, *only if* the change alters a
+   confidence level, an exemption, a flag, or the operator's mental model. CI
+   byte-checks `scripts/scan.py` against the scanner, so detector *logic* is
+   mirrored automatically; the SKILL.md prose and its flag list are NOT, so they
+   must be kept consistent with `reference.md` and the README CLI section by hand.
 
 Then run `pytest`, `python -m falsegreen src tests` (must stay clean), and
 `diff src/falsegreen/scanner.py skills/falsegreen/scripts/scan.py` (must be
