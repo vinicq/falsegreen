@@ -47,6 +47,32 @@ def test_flags_self_compare(tmp_path):
     """)
 
 
+def test_flags_bare_name_is_compare(tmp_path):
+    # `x is x` (no call) is always true: still C7
+    assert "C7" in scan_source(tmp_path, """
+        def test_x():
+            assert obj is obj
+    """)
+
+
+def test_is_between_two_calls_is_not_self_compare(tmp_path):
+    # f() is f() asserts two calls return the SAME object: the canonical
+    # lru_cache / singleton identity test, NOT a tautology. Must not be C7.
+    codes = scan_source(tmp_path, """
+        def test_loader_is_cached():
+            assert load_module() is load_module()
+    """)
+    assert "C7" not in codes
+
+
+def test_is_between_two_method_calls_is_not_self_compare(tmp_path):
+    codes = scan_source(tmp_path, """
+        def test_singleton():
+            assert registry.get() is registry.get()
+    """)
+    assert "C7" not in codes
+
+
 def test_flags_swallowing_try(tmp_path):
     assert "C3" in scan_source(tmp_path, """
         def test_x():
