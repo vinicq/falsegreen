@@ -45,13 +45,28 @@ agent-based workflows detect and refactor test smells (Phi-4-14B, pass@5 of 75.3
 six generated pull requests merged into open-source projects). Backs falsegreen's
 LLM semantic pass and the AI-applies-the-fix path of the dual-use report.
 
-**Beyond Green Tests: Removing Smells From Natural Language Tests.**
-Manoel Aranda III, Márcio Ribeiro. Universidade Federal de Alagoas (UFAL), 2025.
-doi:10.1145/3661167.3661225. Transformations and an NLP tool for natural-language
-(manual) test smells. Out of scope for falsegreen (which targets pytest code), but
-its *Unverified Action* smell is the manual-test analogue of an empty/neverfail
-test, and it is a possible future direction if falsegreen ever covers BDD or
-manual specs.
+**SENTINEL: Processo para Remoção Automática de Test Smells.** Adriano Pizzini.
+PhD thesis, PUCPR / PPGIa, Curitiba, 2024. Advisor Andreia Malucelli, co-advisor
+Sheila Reinehr. SENTINEL validates a test refactoring by cloning the project and
+comparing the execution trace (branch flow and object state) before and after the
+change. falsegreen adapts that idea as the validation gate for its AI-fix path:
+after an LLM strengthens a flagged test, run it on a clean replica (must still pass)
+and on a mutated replica (must now fail), paired with mutmut/cosmic-ray.
+
+**Uma Investigação sobre Test Smells em Códigos de Testes JavaScript.**
+Dalton Nicodemos Jorge ([@daltonjorge](https://github.com/daltonjorge)). PhD thesis,
+UFCG, 2023. Advisors Patrícia D. L. Machado, Wilkerson L. Andrade. Tool STEEL:
+<https://github.com/daltonjorge/steel>. Its JavaScript Exception Test smell (a
+`try/catch` that swallows the thrown error) and assertion-in-`forEach`-over-empty
+sharpened the skill's "Frontend cues by language" with two J1 cues for Jest/Vitest.
+
+**Detecção de smells em testes automatizados em diferentes linguagens de
+programação.** Gustavo Augusto Calazans Lopes. TCC, UFAL, 2023. Advisor Márcio de
+Medeiros Ribeiro, co-advisor Elvys Alves Soares. Its srcML-per-language approach
+(one shared rule backend over a common AST, plus a per-framework assert vocabulary)
+validated falsegreen's decision to keep the deterministic scanner Python-only and
+delegate cross-language coverage to the language-agnostic semantic pass, and it
+informs how a future pluggable per-language frontend should be factored.
 
 ## A note on the GitHub handles
 

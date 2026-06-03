@@ -310,7 +310,12 @@ you are wrong, so say "needs review" when unsure.
   assertionless. `expect(spy).toHaveBeenCalled()` with no assertion on the real
   output -> J2/J3 interaction-only oracle. `it.skip`/`xit`/`it.only` narrowing the
   run so the rest never executes -> J1. A dropped `await` on `expect(await fn())`,
-  or a returned promise the runner does not await -> J1 un-awaited (RAISE).
+  or a returned promise the runner does not await -> J1 un-awaited (RAISE). A
+  `try { callUnit() } catch (e) { /* logged, not re-thrown */ }` in the test body
+  swallows the thrown error and the test passes without asserting -> J1 (the JS
+  twin of C3; use the lib's `expect(fn).toThrow()` / `assert.throws`). An assertion
+  inside `arr.forEach(...)` / `.map` / `for...of` over a collection that can be
+  empty fires zero times and passes vacuously -> J1 (the JS form of C1/C21).
 - **React Testing Library:** `expect(element).toBeInTheDocument()` / `.toBeVisible()`
   is the normal idiom, NOT weak. Querying by `data-testid` or asserting a hashed CSS
   class name -> J5 coupled-to-internals (prefer role/text). A `queryBy...` whose null
