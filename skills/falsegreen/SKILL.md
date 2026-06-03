@@ -38,7 +38,7 @@ plain-language guide is in `../../docs/guide.md`.
 Run the bundled scanner (works whether or not the package is pip-installed):
 
 ```
-python "${CLAUDE_SKILL_DIR}/scripts/scan.py" --json tests/
+python "${CLAUDE_SKILL_DIR}/scripts/scan.py" --format json tests/
 ```
 
 `${CLAUDE_SKILL_DIR}` is set by Claude Code. On another Agent Skills client that
@@ -51,13 +51,23 @@ also equivalent here. Useful flags:
 ```
 falsegreen tests/            # scan a folder or file
 falsegreen --staged          # only test files staged in git
-falsegreen --json            # machine-readable, for this pass
+falsegreen --format json     # machine-readable, for this pass (--json is an alias)
 falsegreen --disable C6,C2b  # turn off specific codes
+falsegreen --config PATH     # honor a project's [tool.falsegreen] / .falsegreen.toml
+falsegreen --baseline        # suppress findings already in .falsegreen-baseline.json
 ```
 
 Suppress one finding inline with `# falsegreen: ignore` or
 `# falsegreen: ignore[C8]` on its line. Exit codes: `0` clean, `10` low only,
 `20` at least one high-confidence finding.
+
+If the repo has a `[tool.falsegreen]` config, a `.falsegreen.toml`, or a
+`.falsegreen-baseline.json`, run with `--config`/`--baseline` so your triage
+matches what the team's pre-commit and CI actually report. A finding the project
+has deliberately disabled or baselined is not something to resurface as new -
+treat it as accepted, unless the semantic reading shows a frozen bug (case 18)
+hiding behind the suppression. A baseline can silence a real case-18 bug, and the
+human pass is the only thing that can see through it.
 
 Findings come in two buckets. **HIGH** = almost certainly a false positive
 (assert True, empty test, except that swallows, `pytest.skip` in a broad except,
@@ -198,5 +208,8 @@ wrong and why.
   manufacturing a false positive.
 - Low-confidence scanner hits are starting points, not verdicts. An `assert`
   inside a `for` over a fixed non-empty list is fine; judge it.
+- A disabled code or a baselined finding reflects a team decision; respect it. But
+  a baseline does not make a frozen-bug (case 18) verdict wrong - say so if you see
+  one behind a suppression.
 - The scanner is Python/pytest. The patterns are language-agnostic; apply the
   semantic protocol by hand for other stacks.
