@@ -1,8 +1,12 @@
 """Real tests for the scanner. The false-positive detector cannot itself be one."""
 import textwrap
 
+import json
+import xml.etree.ElementTree as ET
+
 from falsegreen.scanner import (
     run, analyze_file, main, load_config, effective_conf,
+    render_sarif, render_junit, summary_line,
 )
 
 
@@ -384,3 +388,89 @@ def test_cli_disable_overrides_config_severity(tmp_path):
     assert effective_conf("C8", conf, cli_disable={"C8"}) == "off"
     assert effective_conf("C8", conf, cli_disable=set()) == "high"
     assert effective_conf("C8", None, None) == "low"  # catalog default
+
+
+# --- FG-FORMAT-1: text/json/sarif/junit + summary + output ----------------
+
+def _mixed_findings(tmp_path):
+    # one HIGH (C5 assert True) and one LOW (C8 float equality)
+    f = _write(tmp_path / "test_mixed.py", """
+        def test_high():
+            assert True
+        def test_low():
+            assert total() == 0.3
+    """)
+    return f, run([f])
+
+
+def test_sarif_is_valid_and_maps_severity(tmp_path):
+    _f, findings = _mixed_findings(tmp_path)
+    doc = json.loads(render_sarif(findings))
+    assert doc["version"] == "2.1.0"
+    run0 = doc["runs"][0]
+    assert run0["tool"]["driver"]["name"] == "falsegreen"
+    rule_ids = {r["id"] for r in run0["tool"]["driver"]["rules"]}
+    assert {"C5", "C8"} <= rule_ids
+    levels = {r["ruleId"]: r["level"] for r in run0["results"]}
+    assert levels["C5"] == "error"     # HIGH -> error
+    assert levels["C8"] == "warning"   # LOW -> warning
+
+
+def test_sarif_uris_are_forward_slash_relative(tmp_path):
+    _f, findings = _mixed_findings(tmp_path)
+    doc = json.loads(render_sarif(findings))
+    results = doc["runs"][0]["results"]
+    assert len(results) == 2  # the C5 (high) and C8 (low) findings; guards the loop below
+    locs = [r["locations"][0]["physicalLocation"] for r in results]
+    assert all("\\" not in p["artifactLocation"]["uri"] for p in locs)
+    assert all(p["region"]["startLine"] >= 1 for p in locs)
+
+
+def test_sarif_level_follows_severity_override(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nC8 = "high"\n')
+    f = _write(tmp_path / "test_o.py", "def test_x():\n    assert total() == 0.3\n")
+    findings = run([f], config_path=cfg)
+    doc = json.loads(render_sarif(findings))
+    levels = {r["ruleId"]: r["level"] for r in doc["runs"][0]["results"]}
+    assert levels["C8"] == "error"  # promoted via config, SARIF reflects it
+
+
+def test_junit_is_valid_xml_with_counts(tmp_path):
+    _f, findings = _mixed_findings(tmp_path)
+    root = ET.fromstring(render_junit(findings))
+    suite = root.find("testsuite")
+    assert suite.get("failures") == "1"   # the HIGH
+    assert suite.get("skipped") == "1"    # the LOW
+    kinds = {tc.find("failure") is not None for tc in suite.findall("testcase")}
+    assert True in kinds  # at least one <failure>
+
+
+def test_json_flag_is_alias_for_format_json(tmp_path, capsys):
+    f = _write(tmp_path / "test_h.py", "def test_x():\n    assert True\n")
+    main([f, "--json"])
+    out = capsys.readouterr().out
+    parsed = json.loads(out)
+    assert parsed[0]["code"] == "C5"
+    assert parsed[0]["confidence"] == "high"
+
+
+def test_output_flag_writes_file(tmp_path):
+    f = _write(tmp_path / "test_h.py", "def test_x():\n    assert True\n")
+    out = tmp_path / "report.sarif"
+    main([f, "--format", "sarif", "--output", str(out)])
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert doc["version"] == "2.1.0"
+
+
+def test_summary_goes_to_stderr(tmp_path, capsys):
+    f = _write(tmp_path / "test_h.py", "def test_x():\n    assert True\n")
+    main([f, "--summary"])
+    err = capsys.readouterr().err
+    assert "scanned" in err and "finding(s)" in err and "C5:1" in err
+
+
+def test_summary_line_counts(tmp_path):
+    _f, findings = _mixed_findings(tmp_path)
+    line = summary_line(findings, n_files=1)
+    assert "1 high, 1 low" in line
+    assert "scanned 1 test file(s)" in line
