@@ -181,6 +181,28 @@ def test_numeric_equality_is_not_c18(tmp_path):
     assert "C18" not in codes
 
 
+# --- C19: pytest.raises wraps more than one call ----------------------------
+
+def test_flags_raises_wrapping_two_statements(tmp_path):
+    assert "C19" in scan_source(tmp_path, """
+        import pytest
+        def test_x():
+            with pytest.raises(ValueError):
+                obj = build()
+                obj.boom()
+    """)
+
+
+def test_raises_wrapping_single_call_is_clean(tmp_path):
+    codes = scan_source(tmp_path, """
+        import pytest
+        def test_x():
+            with pytest.raises(ValueError, match="bad"):
+                boom()
+    """)
+    assert "C19" not in codes
+
+
 # --- regressions: it must NOT flag legitimate code (review counter-examples) -
 
 def test_clean_test_has_no_findings(tmp_path):

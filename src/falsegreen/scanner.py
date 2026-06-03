@@ -85,6 +85,7 @@ CASES = {
     "C16": ("result depends on time, randomness or a fixed sleep", "low", "J1"),
     "C17": ("skip inside a broad except hides a real failure", "high", "J1"),
     "C18": ("compares str()/repr() of a value to a literal (checks formatting)", "low", "J2"),
+    "C19": ("pytest.raises wraps more than one call (target may never be reached)", "low", "J1"),
     "C20": ("assertion in dead code after return/raise/fail (never runs)", "high", "J1"),
     "C21": ("every assertion is conditional, none runs unconditionally", "low", "J1"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
@@ -805,6 +806,12 @@ def analyze_function(func, file, findings, in_class=False):
             for item in n.items:
                 if is_call_to(item.context_expr, "pytest.raises", "raises"):
                     call = item.context_expr
+            # C19: a raises block wrapping more than one statement. An earlier
+            # statement can raise the expected error, so the call you meant to
+            # test is never reached and the test passes for the wrong reason.
+            if call is not None and len(n.body) > 1:
+                findings.append(Finding(file, n.lineno, "C19",
+                                        "narrow the block to the one call that should raise"))
         elif isinstance(n, ast.Call) and is_call_to(n, "pytest.raises", "raises"):
             call = n
         if call is not None:
