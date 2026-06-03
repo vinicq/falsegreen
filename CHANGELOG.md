@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Layer detection: each finding carries a `layer` (logic | web | browser) inferred
+  from the file's imports, surfaced in JSON output and as a `layer:*` SARIF tag.
+  Lets a team triage by layer (a finding in pure logic is higher-signal than one in
+  a web/UI test). Metadata only, no change to which findings fire.
+
 ## [0.1.0] - 2026-06-03
 
 First release.
