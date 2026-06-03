@@ -141,6 +141,46 @@ def test_fractional_float_is_still_c8(tmp_path):
     """)
 
 
+# --- C18: comparing str()/repr()/f-string to a literal (Sensitive Equality) -
+
+def test_flags_str_of_value_vs_literal(tmp_path):
+    assert "C18" in scan_source(tmp_path, """
+        def test_x():
+            assert str(amount) == "5.00"
+    """)
+
+
+def test_flags_repr_vs_literal(tmp_path):
+    assert "C18" in scan_source(tmp_path, """
+        def test_x():
+            assert repr(node) == "Node(1)"
+    """)
+
+
+def test_flags_fstring_vs_literal(tmp_path):
+    assert "C18" in scan_source(tmp_path, """
+        def test_x():
+            assert f"{user.id}" == "42"
+    """)
+
+
+def test_real_string_field_equality_is_not_c18(tmp_path):
+    # comparing an actual string attribute to a literal is a real value check
+    codes = scan_source(tmp_path, """
+        def test_x():
+            assert user.name == "ada"
+    """)
+    assert "C18" not in codes
+
+
+def test_numeric_equality_is_not_c18(tmp_path):
+    codes = scan_source(tmp_path, """
+        def test_x():
+            assert compute() == 5
+    """)
+    assert "C18" not in codes
+
+
 # --- regressions: it must NOT flag legitimate code (review counter-examples) -
 
 def test_clean_test_has_no_findings(tmp_path):

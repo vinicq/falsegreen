@@ -63,6 +63,7 @@ Notes.
 | 7 | Compares a value to itself (`assert x == x`, both sides identical) | `C7` | HIGH | testsmells.org: Redundant Assertion |
 | 8 | Exact equality on a float | `C8` | LOW | floating-point equality smell |
 | 9 | `pytest.raises` too broad (`Exception`/`BaseException`, or no `match`) | `C9` | LOW | ruff PT011 / PT010 |
+| 18 | Compares `str()`/`repr()`/f-string of a value to a literal | `C18` | LOW | Sensitive Equality (testsmells.org) |
 
 Notes.
 - **C5**: the famous `assert (x == y, "msg")` bug, a non-empty tuple, is always
@@ -83,6 +84,11 @@ Notes.
   are the usual all/none ratio sentinels (0/N, N/N).
 - **C9**: a `pytest.raises(Exception)` swallows the wrong error too, including a
   `NameError` from a typo in the test. Pin the exact type and a `match`.
+- **C18**: `assert str(x) == "..."` / `repr(x) == "..."` / `f"{x}" == "..."` checks
+  how `x` formats, not its value. A repr tweak breaks the test for no real defect,
+  and a value bug can hide behind matching text. Assert the value, or a field, not
+  its stringification. Comparing a real string attribute (`obj.name == "x"`) is
+  fine, not C18.
 
 ---
 

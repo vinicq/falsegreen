@@ -6,6 +6,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- C18 (LOW): assertion comparing `str()`/`repr()`/an f-string of a value to a
+  string literal, which checks formatting instead of the value (Sensitive Equality).
+
 ### Fixed
 - C7 no longer flags `f() is f()` (the lru_cache / singleton identity test); only
   a no-call `is` self-compare is always true.
