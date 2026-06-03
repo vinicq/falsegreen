@@ -74,8 +74,13 @@ Notes.
   has no return types), so a predicate-named method that returns a non-bool slips
   through; the semantic pass is the backstop. A bare `assert path.exists` (missing
   parens, always truthy) stays flagged.
-- **C7**: detected when both sides are AST-identical. Calling the same function on
-  both sides (`assert f(d) == f(d)`) is the disguised version.
+- **C7**: detected when both sides are AST-identical. `assert f(d) == f(d)` is the
+  disguised version. But `f() is f()` is NOT C7: with `is`, two separate calls
+  assert they return the SAME object, the canonical lru_cache / singleton identity
+  test. Only an `is` with no call (`x is x`) is always true.
+- **C8**: exact `==` on a fractional float (0.1, 0.3, 2.5) fails on rounding, not
+  on a bug. `== 0.0` and `== 1.0` are exempt: both are exactly representable and
+  are the usual all/none ratio sentinels (0/N, N/N).
 - **C9**: a `pytest.raises(Exception)` swallows the wrong error too, including a
   `NameError` from a typo in the test. Pin the exact type and a `match`.
 

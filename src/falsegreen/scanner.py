@@ -402,14 +402,23 @@ def assert_weak(test):
     return None
 
 
+def _exact_safe_float(v):
+    """0.0 and 1.0 are exactly representable and are the usual all/none ratio
+    sentinels (0/N, N/N), so exact == on them is not the rounding smell C8 warns
+    about. Fractional literals like 0.1, 0.3, 2.5 still are."""
+    return v in (0.0, 1.0)
+
+
 def assert_exact_float(test):
     if isinstance(test, ast.Compare) and any(isinstance(o, ast.Eq) for o in test.ops):
         sides = [test.left] + list(test.comparators)
         for side in sides:
             if isinstance(side, ast.Constant) and isinstance(side.value, float):
-                return True
-            if side.__class__.__name__ == "Num" and isinstance(getattr(side, "n", None), float):
-                return True
+                if not _exact_safe_float(side.value):
+                    return True
+            elif side.__class__.__name__ == "Num" and isinstance(getattr(side, "n", None), float):
+                if not _exact_safe_float(side.n):
+                    return True
     return False
 
 

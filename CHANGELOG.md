@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- C7 no longer flags `f() is f()` (the lru_cache / singleton identity test); only
+  a no-call `is` self-compare is always true.
+
+### Changed
+- C8 exempts `== 0.0` and `== 1.0` (exact all/none ratio sentinels); fractional
+  floats like `0.1` still fire.
+
 ## [0.1.0] - 2026-06-03
 
 First release.
