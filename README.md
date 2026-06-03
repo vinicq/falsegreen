@@ -198,9 +198,16 @@ Run it:
 falsegreen                      # scan the current directory
 falsegreen tests/               # scan a folder or a single file
 falsegreen --staged             # only the test files staged in git
-falsegreen --json               # machine-readable output
+falsegreen --format sarif       # text (default) | json | sarif | junit
+falsegreen --summary            # one-line "N scanned, M flagged" to stderr
+falsegreen --output report.sarif  # write the formatted output to a file
+falsegreen --json               # alias for --format json
 falsegreen --disable C6,C2b     # turn specific codes off
 ```
+
+`--format sarif` emits SARIF 2.1.0 (HIGH -> error, LOW -> warning) for GitHub
+code scanning / PR annotations; `--format junit` emits JUnit XML (HIGH ->
+`<failure>`, LOW -> `<skipped>`) for CI dashboards.
 
 `python -m falsegreen ...` is equivalent to the `falsegreen` command. Exit codes:
 `0` clean, `10` low-confidence findings only, `20` at least one high-confidence
@@ -305,7 +312,7 @@ then the built-in default. Point at a specific file with `--config PATH`. The
 config reader uses the standard library on Python 3.11+ and `tomli` on older
 versions; on 3.8 without `tomli` it is a silent no-op.
 
-(Baseline/ratchet mode for legacy repos and SARIF/JUnit output are on the roadmap.)
+(Baseline/ratchet mode for legacy repos is on the roadmap.)
 
 ---
 

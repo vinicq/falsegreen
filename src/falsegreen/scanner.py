@@ -37,6 +37,10 @@ import os
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
+
+__version__ = "0.1.0"  # keep in lockstep with pyproject / plugin.json (see T1)
+TOOL_URI = "https://github.com/vinicq/falsegreen"
 
 try:
     import tomllib as _toml  # Python 3.11+
@@ -745,32 +749,137 @@ def analyze_file(file):
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
-def print_text(findings):
+def _rel_uri(path):
+    """A forward-slash relative URI (load-bearing for GitHub code scanning)."""
+    try:
+        rel = os.path.relpath(path)
+    except ValueError:  # different drive on Windows
+        rel = path
+    return rel.replace("\\", "/")
+
+
+def render_text(findings):
     if not findings:
-        print("No false-positive patterns found in the analyzed tests.")
-        return
+        return "No false-positive patterns found in the analyzed tests."
     highs = [a for a in findings if a.conf == "high"]
     lows = [a for a in findings if a.conf == "low"]
+    out = []
 
     def block(title, items):
         if not items:
             return
-        print("\n" + title)
-        print("-" * len(title))
+        out.append("\n" + title)
+        out.append("-" * len(title))
         for a in sorted(items, key=lambda x: (x.file, x.line)):
             t = CASES[a.code][0]
             extra = ("  (%s)" % a.detail) if a.detail else ""
-            print("  %s:%d  [%s] %s%s" % (a.file, a.line, a.code, t, extra))
+            out.append("  %s:%d  [%s] %s%s" % (a.file, a.line, a.code, t, extra))
 
     block("HIGH confidence (almost certainly a false positive)", highs)
     block("LOW confidence (test smell, confirm by hand or with /falsegreen)", lows)
+    out.append("\nSummary: %d high, %d low." % (len(highs), len(lows)))
+    out.append("Cases 12 and 18 (copied logic / wrong expected value) need the semantic")
+    out.append("pass: run /falsegreen so the expected value is checked against intent.")
+    return "\n".join(out)
 
-    print("\nSummary: %d high, %d low." % (len(highs), len(lows)))
-    print("Cases 12 and 18 (copied logic / wrong expected value) need the semantic")
-    print("pass: run /falsegreen so the expected value is checked against intent.")
+
+def print_text(findings):
+    print(render_text(findings))
 
 
-def run(paths, staged=False, disable=None, config=None, config_path=None):
+def render_json(findings):
+    return json.dumps([a.dict() for a in findings], ensure_ascii=False, indent=2)
+
+
+def _sarif_level(conf):
+    return "error" if conf == "high" else "warning"
+
+
+def render_sarif(findings):
+    """SARIF 2.1.0: HIGH -> error, LOW -> warning (via the finding's effective
+    conf), forward-slash relative URIs, one tool + one implicit category."""
+    codes = []
+    for a in findings:
+        if a.code not in codes:
+            codes.append(a.code)
+    rules = []
+    for code in codes:
+        title, default_conf = CASES[code]
+        rules.append({
+            "id": code,
+            "name": code,
+            "shortDescription": {"text": title},
+            "defaultConfiguration": {"level": _sarif_level(default_conf)},
+            "helpUri": TOOL_URI,
+        })
+    results = []
+    for a in findings:
+        text = CASES[a.code][0] + (" (%s)" % a.detail if a.detail else "")
+        results.append({
+            "ruleId": a.code,
+            "level": _sarif_level(a.conf),
+            "message": {"text": text},
+            "locations": [{
+                "physicalLocation": {
+                    "artifactLocation": {"uri": _rel_uri(a.file)},
+                    "region": {"startLine": a.line},
+                }
+            }],
+        })
+    doc = {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {
+                "name": "falsegreen",
+                "informationUri": TOOL_URI,
+                "version": __version__,
+                "rules": rules,
+            }},
+            "results": results,
+        }],
+    }
+    return json.dumps(doc, ensure_ascii=False, indent=2)
+
+
+def render_junit(findings):
+    """JUnit XML: HIGH -> <failure>, LOW -> <skipped>. One case per finding."""
+    n = len(findings)
+    n_high = sum(1 for a in findings if a.conf == "high")
+    n_low = n - n_high
+    attrs = {"name": "falsegreen", "tests": str(n),
+             "failures": str(n_high), "skipped": str(n_low), "errors": "0"}
+    suites = ET.Element("testsuites", attrs)
+    suite = ET.SubElement(suites, "testsuite", attrs)
+    for a in sorted(findings, key=lambda x: (x.file, x.line)):
+        title = CASES[a.code][0] + (" (%s)" % a.detail if a.detail else "")
+        case = ET.SubElement(suite, "testcase", {
+            "classname": "falsegreen.%s" % a.code,
+            "name": "%s %s:%d" % (a.code, _rel_uri(a.file), a.line),
+        })
+        loc = "%s:%d" % (_rel_uri(a.file), a.line)
+        if a.conf == "high":
+            el = ET.SubElement(case, "failure", {"message": title})
+            el.text = loc
+        else:
+            ET.SubElement(case, "skipped", {"message": "%s  %s" % (title, loc)})
+    xml = ET.tostring(suites, encoding="unicode")
+    return '<?xml version="1.0" encoding="utf-8"?>\n' + xml
+
+
+def summary_line(findings, n_files):
+    n_high = sum(1 for a in findings if a.conf == "high")
+    n_low = len(findings) - n_high
+    by_code = {}
+    for a in findings:
+        by_code[a.code] = by_code.get(a.code, 0) + 1
+    breakdown = " ".join("%s:%d" % (c, by_code[c]) for c in sorted(by_code))
+    line = "falsegreen: scanned %d test file(s), %d finding(s) [%d high, %d low]" % (
+        n_files, len(findings), n_high, n_low)
+    return line + ("  " + breakdown if breakdown else "")
+
+
+def run(paths, staged=False, disable=None, config=None, config_path=None, stats=None):
     cli_disable = set(disable or [])
     if config is None:
         config = load_config(explicit=config_path)
@@ -781,6 +890,8 @@ def run(paths, staged=False, disable=None, config=None, config_path=None):
     else:
         files = discover(["."])
     files = _apply_exclude(files, config.get("exclude", []))
+    if stats is not None:
+        stats["files"] = len(files)
 
     findings = []
     seen = set()
@@ -803,19 +914,36 @@ def main(argv=None):
                                  description="False-positive scanner for Python tests.")
     ap.add_argument("paths", nargs="*", help="files or dirs (empty = cwd)")
     ap.add_argument("--staged", action="store_true", help="only test files staged in git")
-    ap.add_argument("--json", action="store_true", help="JSON output")
+    ap.add_argument("--format", choices=["text", "json", "sarif", "junit"], default="text",
+                    help="output format (default: text)")
+    ap.add_argument("--json", action="store_true", help="alias for --format json")
+    ap.add_argument("--summary", action="store_true",
+                    help="print a one-line scan summary to stderr")
+    ap.add_argument("--output", default=None, metavar="PATH",
+                    help="write the formatted output to PATH instead of stdout")
     ap.add_argument("--disable", default="", help="comma-separated case codes to skip (e.g. C6,C2b)")
     ap.add_argument("--config", default=None,
                     help="path to a .falsegreen.toml or pyproject.toml (default: auto-discover in cwd)")
     args = ap.parse_args(argv)
 
     disable = {c.strip() for c in args.disable.split(",") if c.strip()}
-    findings = run(args.paths, staged=args.staged, disable=disable, config_path=args.config)
+    stats = {}
+    findings = run(args.paths, staged=args.staged, disable=disable,
+                   config_path=args.config, stats=stats)
 
-    if args.json:
-        print(json.dumps([a.dict() for a in findings], ensure_ascii=False, indent=2))
+    fmt = "json" if args.json else args.format
+    renderers = {"text": render_text, "json": render_json,
+                 "sarif": render_sarif, "junit": render_junit}
+    rendered = renderers[fmt](findings)
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(rendered + "\n")
     else:
-        print_text(findings)
+        print(rendered)
+
+    if args.summary:
+        sys.stderr.write(summary_line(findings, stats.get("files", 0)) + "\n")
 
     has_high = any(a.conf == "high" for a in findings)
     has_low = any(a.conf == "low" for a in findings)
