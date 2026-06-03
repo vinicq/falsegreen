@@ -19,11 +19,20 @@ Confidence in the scanner: **HIGH** blocks the commit, **LOW** warns only.
 | 3 | `assert` inside a `try` whose `except` swallows the error | `C3` | HIGH | testsmells.org: Exception Handling; ruff PT017 |
 | 4 | Forgotten test pytest never collects (name not `test_`, or a nested test def) | `C4` | HIGH | pytest collection rules |
 | 4b | `Test*` class with `__init__` (collected only if subclassed) | `C4b` | LOW | Constructor Initialization |
+| 20 | `assert` in dead code after `return`/`raise`/`break`/`continue`/`fail()` | `C20` | HIGH | Fully Rotten Green Test (Soares 2023) |
 
 Notes.
+- Every scanner code carries a judgment tag (J1-J6, see SKILL.md) in `CASES`, so
+  text/SARIF/`--summary` output and these docs can group findings by category
+  without splitting the module. Family A maps to J1 (does the assertion run?).
 - **C1**: legitimate when the loop runs over a fixed, non-empty list. The smell is
   an `assert` guarded by a condition that can be false, so the check silently
   skips. Confirm the loop/branch always executes.
+- **C20**: an `assert` (or mock-assert / `pytest.raises`) that follows an
+  unconditional `return`/`raise`/`break`/`continue`/`pytest.fail()`/`assert False`
+  in the SAME block is structurally unreachable, it never runs. HIGH, same
+  certainty as `assert True`. Scanned per block, so a `return` inside one branch
+  does not orphan a sibling check at the parent level (that stays clean).
 - **C2 vs C2b**: a truly empty body is a near-certain false positive (HIGH). A body
   that calls production code but never asserts is flagged LOW, because the check
   may live in a helper it calls.

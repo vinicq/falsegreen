@@ -528,3 +528,87 @@ def test_fingerprint_differs_by_code_and_snippet(tmp_path):
     a = run([f1])[0]
     b = run([f2])[0]
     assert fingerprint(a) != fingerprint(b)  # different file/code/snippet
+
+
+# --- C20: assertion in dead code after a terminator (Fully Rotten Green) ----
+
+def test_flags_assert_after_return(tmp_path):
+    assert "C20" in scan_source(tmp_path, """
+        def test_x():
+            assert setup() == 1
+            return
+            assert teardown() == 0
+    """)
+
+
+def test_flags_assert_after_raise(tmp_path):
+    assert "C20" in scan_source(tmp_path, """
+        def test_x():
+            do()
+            raise SystemExit
+            assert result() == 1
+    """)
+
+
+def test_flags_check_after_unreachable_fail(tmp_path):
+    # a check stranded after pytest.fail()/assert False also never runs
+    assert "C20" in scan_source(tmp_path, """
+        def test_x():
+            pytest.fail("nope")
+            assert result() == 1
+    """)
+
+
+def test_assert_before_return_is_clean(tmp_path):
+    assert "C20" not in scan_source(tmp_path, """
+        def test_x():
+            assert compute() == 1
+            return
+    """)
+
+
+def test_return_inside_if_does_not_orphan_later_assert(tmp_path):
+    # early-return guard: the assert after the if is still reachable
+    assert "C20" not in scan_source(tmp_path, """
+        def test_x():
+            if skip_condition():
+                return
+            assert compute() == 1
+    """)
+
+
+def test_return_in_nested_branch_leaves_trailing_assert_reachable(tmp_path):
+    assert "C20" not in scan_source(tmp_path, """
+        def test_x():
+            for x in items():
+                if x:
+                    return
+            assert done() == 1
+    """)
+
+
+# --- FG-CONFIG-1/#19: every CASES entry carries a valid judgment ------------
+
+def test_every_case_has_a_known_judgment(tmp_path):
+    from falsegreen.scanner import CASES, JUDGMENTS
+    entries = list(CASES.values())
+    assert all(len(e) == 3 for e in entries)            # (title, confidence, judgment)
+    assert all(e[1] in ("high", "low") for e in entries)
+    assert all(e[2] in JUDGMENTS for e in entries)
+
+
+def test_sarif_carries_the_judgment_tag(tmp_path):
+    f = _write(tmp_path / "test_h.py", "def test_x():\n    assert True\n")
+    findings = run([f])
+    doc = json.loads(render_sarif(findings))
+    rule = doc["runs"][0]["tool"]["driver"]["rules"][0]
+    assert rule["properties"]["tags"] == ["J2"]  # C5 is J2
+    result = doc["runs"][0]["results"][0]
+    assert result["properties"]["tags"] == ["J2"]
+
+
+def test_summary_has_by_judgment_line(tmp_path, capsys):
+    f = _write(tmp_path / "test_h.py", "def test_x():\n    assert True\n")
+    main([f, "--summary"])
+    err = capsys.readouterr().err
+    assert "by judgment:" in err and "J2:1" in err

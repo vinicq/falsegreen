@@ -57,6 +57,35 @@ assert result is not None
 assert result.status == "ok"
 ```
 
+## 1b. The check sits after a line that ends the test early
+
+In the real world: the inspector writes "approved" at the bottom of the form, then
+stamps "REJECTED" above it and walks out. Nobody ever reads the line below the
+stamp. The bottom of the form might as well be blank.
+
+In code, the `assert` comes after a `return`, a `raise`, or a `pytest.fail()` in
+the same block. Those lines end the test on the spot, so the check below them is
+dead code that never runs. The test passes because it stops before it would have
+checked anything.
+
+```python
+# Lying: the test returns before it ever reaches the assert
+def test_x():
+    result = compute()
+    return
+    assert result == 42   # never runs
+```
+
+How to confirm it works: delete the early `return`/`raise`, or move the check
+above it. If the early exit is on purpose (a guard), put it inside an `if` so it
+only fires when it should, and keep the real check on the normal path.
+
+```python
+def test_x():
+    result = compute()
+    assert result == 42
+```
+
 ## 2. The test checks nothing (no assertion at all)
 
 In the real world: the inspector turns the machine on, sees it powered up, and

@@ -52,27 +52,40 @@ except ImportError:  # pragma: no cover - depends on interpreter version
         _toml = None  # no TOML reader: config is a silent no-op (3.8 without tomli)
 
 # ---------------------------------------------------------------------------
-# Case catalog (mirrors the guide). code -> (title, confidence)
+# Case catalog (mirrors the guide). code -> (title, confidence, judgment)
 # confidence: "high" => blocks the commit; "low" => warns only.
+# judgment: which of the semantic pass's questions the code belongs to (J1-J6,
+# see SKILL.md). Lets output/SARIF/docs group findings by category without
+# splitting the flat module (the CI drift guard is a byte-for-byte file diff).
 # ---------------------------------------------------------------------------
+JUDGMENTS = {
+    "J1": "does the assertion actually run?",
+    "J2": "is the oracle independent of the code?",
+    "J3": "does it exercise the real unit, or a stand-in?",
+    "J4": "does it check enough, and the right thing?",
+    "J5": "is it coupled to internals it should not see?",
+    "J6": "does it pass in isolation, or only via shared state?",
+}
+
 CASES = {
-    "C1":  ("assert inside if/for that may never run", "low"),
-    "C2":  ("test with no check at all (empty body)", "high"),
-    "C2b": ("test calls things but checks nothing", "low"),
-    "C3":  ("assert inside try whose except swallows the error", "high"),
-    "C4":  ("test is not collected by pytest (silently never runs)", "high"),
-    "C4b": ("test class has __init__ (not collected unless subclassed)", "low"),
-    "C5":  ("always-true check (assert True / tuple / or True)", "high"),
-    "C6":  ("weak check (only verifies that something came back)", "low"),
-    "C7":  ("compares a thing to itself (always matches)", "high"),
-    "C8":  ("exact equality on a float (fails on rounding, not bugs)", "low"),
-    "C9":  ("pytest.raises too broad (accepts any error)", "low"),
-    "C13": ("mock assertion misspelled / not called (always passes)", "high"),
-    "C13b":("patch without autospec (lets mock typos pass)", "low"),
-    "C14": ("golden/snapshot generated from the output itself", "low"),
-    "C16": ("result depends on time, randomness or a fixed sleep", "low"),
-    "C17": ("skip inside a broad except hides a real failure", "high"),
-    "CC":  ("commented-out assert (check switched off)", "low"),
+    "C1":  ("assert inside if/for that may never run", "low", "J1"),
+    "C2":  ("test with no check at all (empty body)", "high", "J1"),
+    "C2b": ("test calls things but checks nothing", "low", "J1"),
+    "C3":  ("assert inside try whose except swallows the error", "high", "J1"),
+    "C4":  ("test is not collected by pytest (silently never runs)", "high", "J1"),
+    "C4b": ("test class has __init__ (not collected unless subclassed)", "low", "J1"),
+    "C5":  ("always-true check (assert True / tuple / or True)", "high", "J2"),
+    "C6":  ("weak check (only verifies that something came back)", "low", "J4"),
+    "C7":  ("compares a thing to itself (always matches)", "high", "J2"),
+    "C8":  ("exact equality on a float (fails on rounding, not bugs)", "low", "J4"),
+    "C9":  ("pytest.raises too broad (accepts any error)", "low", "J4"),
+    "C13": ("mock assertion misspelled / not called (always passes)", "high", "J3"),
+    "C13b":("patch without autospec (lets mock typos pass)", "low", "J3"),
+    "C14": ("golden/snapshot generated from the output itself", "low", "J2"),
+    "C16": ("result depends on time, randomness or a fixed sleep", "low", "J1"),
+    "C17": ("skip inside a broad except hides a real failure", "high", "J1"),
+    "C20": ("assertion in dead code after return/raise/fail (never runs)", "high", "J1"),
+    "CC":  ("commented-out assert (check switched off)", "low", "J1"),
 }
 
 # Real mock API assertion methods.
@@ -533,6 +546,63 @@ def gather_mock_names(func):
     return names
 
 
+def _stmt_is_terminator(stmt):
+    """An unconditional control-flow exit: nothing after it in this block runs."""
+    if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
+        return True
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+        t = dotted_name(stmt.value.func)
+        if t.endswith("pytest.fail") or t.split(".")[-1] == "fail":
+            return True
+    if isinstance(stmt, ast.Assert):  # assert False / assert 0 always raises
+        v = _const_value(stmt.test)
+        if v is not None and not v:
+            return True
+    return False
+
+
+def _stmt_is_check(stmt):
+    """A statement that performs a verification (assert, mock-assert, raises)."""
+    if isinstance(stmt, ast.Assert):
+        return True
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+        t = dotted_name(stmt.value.func)
+        last = t.split(".")[-1]
+        if last in MOCK_ASSERTS_VALID or last.startswith("assert") \
+                or t.endswith("raises") or last == "fail":
+            return True
+    if isinstance(stmt, ast.With):
+        for item in stmt.items:
+            if is_call_to(item.context_expr, "pytest.raises", "raises"):
+                return True
+    return False
+
+
+def block_bodies(func):
+    """Yield every block statement-list in func (its body and the bodies of nested
+    if/for/while/with/try), without entering nested def/class/lambda."""
+    yield func.body
+    for node in children_no_nesting(func):
+        for field in ("body", "orelse", "finalbody"):
+            b = getattr(node, field, None)
+            if isinstance(b, list) and b:
+                yield b
+        for h in getattr(node, "handlers", []) or []:
+            yield h.body
+
+
+def dead_checks_after_terminator(stmts):
+    """Checks that appear after an unconditional terminator in the same block."""
+    dead = []
+    terminated = False
+    for stmt in stmts:
+        if terminated and _stmt_is_check(stmt):
+            dead.append(stmt)
+        if _stmt_is_terminator(stmt):
+            terminated = True
+    return dead
+
+
 def analyze_function(func, file, findings, in_class=False):
     line = func.lineno
     mock_names = gather_mock_names(func)
@@ -576,6 +646,14 @@ def analyze_function(func, file, findings, in_class=False):
                 if isinstance(sub, ast.Assert):
                     findings.append(Finding(file, sub.lineno, "C1"))
                     break
+
+    # C20: a check that sits AFTER an unconditional terminator in the same block
+    # (return / raise / break / continue / pytest.fail() / assert False) is dead
+    # code, it never runs. Scanned per block body so a terminator in one branch
+    # does not orphan a sibling at the parent level.
+    for body in block_bodies(func):
+        for stmt in dead_checks_after_terminator(body):
+            findings.append(Finding(file, stmt.lineno, "C20"))
 
     for n in children_no_nesting(func):
         if isinstance(n, ast.Try):
@@ -809,13 +887,14 @@ def render_sarif(findings):
             codes.append(a.code)
     rules = []
     for code in codes:
-        title, default_conf = CASES[code]
+        title, default_conf, judgment = CASES[code]
         rules.append({
             "id": code,
             "name": code,
             "shortDescription": {"text": title},
             "defaultConfiguration": {"level": _sarif_level(default_conf)},
             "helpUri": TOOL_URI,
+            "properties": {"tags": [judgment]},
         })
     results = []
     for a in findings:
@@ -824,6 +903,7 @@ def render_sarif(findings):
             "ruleId": a.code,
             "level": _sarif_level(a.conf),
             "message": {"text": text},
+            "properties": {"tags": [CASES[a.code][2]]},
             "locations": [{
                 "physicalLocation": {
                     "artifactLocation": {"uri": _rel_uri(a.file)},
@@ -876,12 +956,19 @@ def summary_line(findings, n_files):
     n_high = sum(1 for a in findings if a.conf == "high")
     n_low = len(findings) - n_high
     by_code = {}
+    by_judgment = {}
     for a in findings:
         by_code[a.code] = by_code.get(a.code, 0) + 1
+        j = CASES[a.code][2]
+        by_judgment[j] = by_judgment.get(j, 0) + 1
     breakdown = " ".join("%s:%d" % (c, by_code[c]) for c in sorted(by_code))
     line = "falsegreen: scanned %d test file(s), %d finding(s) [%d high, %d low]" % (
         n_files, len(findings), n_high, n_low)
-    return line + ("  " + breakdown if breakdown else "")
+    out = line + ("  " + breakdown if breakdown else "")
+    if by_judgment:
+        out += "\n  by judgment: " + " ".join(
+            "%s:%d" % (j, by_judgment[j]) for j in sorted(by_judgment))
+    return out
 
 
 # ---------------------------------------------------------------------------
