@@ -1,7 +1,9 @@
 """Real tests for the scanner. The false-positive detector cannot itself be one."""
 import textwrap
 
-from falsegreen.scanner import run, analyze_file
+from falsegreen.scanner import (
+    run, analyze_file, main, load_config, effective_conf,
+)
 
 
 def scan_source(tmp_path, code):
@@ -307,3 +309,78 @@ def test_exit_code_high(tmp_path):
     f.write_text("def test_x():\n    assert True\n", encoding="utf-8")
     from falsegreen.scanner import main
     assert main([str(f)]) == 20
+
+
+# --- FG-CONFIG-1: config file + effective_conf resolver --------------------
+
+def _write(p, text):
+    p.write_text(textwrap.dedent(text), encoding="utf-8")
+    return str(p)
+
+
+def test_load_config_reads_pyproject_tool_table(tmp_path):
+    _write(tmp_path / "pyproject.toml", """
+        [tool.falsegreen]
+        disable = ["C6"]
+        exclude = ["legacy/*"]
+        [tool.falsegreen.severity]
+        C8 = "high"
+    """)
+    conf = load_config(start=str(tmp_path))
+    assert conf["disable"] == {"C6"}
+    assert conf["exclude"] == ["legacy/*"]
+    assert conf["severity"] == {"C8": "high"}
+
+
+def test_falsegreen_toml_takes_precedence_over_pyproject(tmp_path):
+    _write(tmp_path / "pyproject.toml", '[tool.falsegreen]\ndisable = ["C6"]\n')
+    _write(tmp_path / ".falsegreen.toml", 'disable = ["C8"]\n')
+    conf = load_config(start=str(tmp_path))
+    assert conf["disable"] == {"C8"}  # .falsegreen.toml wins
+
+
+def test_no_config_is_a_noop(tmp_path):
+    conf = load_config(start=str(tmp_path))
+    assert conf == {"disable": set(), "exclude": [], "severity": {}}
+
+
+def test_invalid_severity_is_ignored_not_fatal(tmp_path):
+    _write(tmp_path / ".falsegreen.toml", '[severity]\nC8 = "bogus"\n')
+    conf = load_config(start=str(tmp_path))
+    assert conf["severity"] == {}  # invalid value dropped, no crash
+
+
+def test_config_disable_suppresses_code(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", 'disable = ["C8"]\n')
+    f = _write(tmp_path / "test_d.py", "def test_x():\n    assert total() == 0.3\n")
+    codes = {a.code for a in run([f], config_path=cfg)}
+    assert "C8" not in codes
+
+
+def test_config_severity_promotes_low_to_high(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nC8 = "high"\n')
+    f = _write(tmp_path / "test_h.py", "def test_x():\n    assert total() == 0.3\n")
+    assert main([f, "--config", cfg]) == 20  # C8 is normally low (exit 10)
+
+
+def test_config_severity_off_suppresses(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nC8 = "off"\n')
+    f = _write(tmp_path / "test_o.py", "def test_x():\n    assert total() == 0.3\n")
+    assert main([f, "--config", cfg]) == 0  # the only finding is turned off
+
+
+def test_config_exclude_glob_skips_file(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", 'exclude = ["test_skip_me.py"]\n')
+    _write(tmp_path / "test_skip_me.py", "def test_x():\n    assert True\n")
+    _write(tmp_path / "test_keep.py", "def test_y():\n    assert True\n")
+    files = {a.file for a in run([str(tmp_path)], config_path=cfg)}
+    assert not any(f.endswith("test_skip_me.py") for f in files)
+    assert any(f.endswith("test_keep.py") for f in files)
+
+
+def test_cli_disable_overrides_config_severity(tmp_path):
+    # precedence: CLI --disable wins over a config that promotes the code
+    conf = {"disable": set(), "exclude": [], "severity": {"C8": "high"}}
+    assert effective_conf("C8", conf, cli_disable={"C8"}) == "off"
+    assert effective_conf("C8", conf, cli_disable=set()) == "high"
+    assert effective_conf("C8", None, None) == "low"  # catalog default
