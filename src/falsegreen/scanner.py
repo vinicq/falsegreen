@@ -223,6 +223,36 @@ def _apply_exclude(files, globs):
 
 
 # ---------------------------------------------------------------------------
+# Layer detection: which layer does a test target? Metadata only, no behavior
+# change. A finding in pure-logic code is higher-signal than one in a web/UI
+# test, so surfacing the layer lets a team triage by it. Foundation for the
+# layer-aware async / web rules (see the roadmap).
+# ---------------------------------------------------------------------------
+WEB_IMPORT_ROOTS = {
+    "django", "flask", "fastapi", "starlette", "rest_framework",
+    "httpx", "requests", "webtest", "werkzeug", "aiohttp",
+}
+BROWSER_IMPORT_ROOTS = {
+    "selenium", "playwright", "splinter", "pytest_playwright",
+}
+
+
+def detect_file_layer(tree):
+    """'browser' | 'web' | 'logic' from the file's import roots (broadest wins)."""
+    roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            roots.add(node.module.split(".")[0])
+    if roots & BROWSER_IMPORT_ROOTS:
+        return "browser"
+    if roots & WEB_IMPORT_ROOTS:
+        return "web"
+    return "logic"
+
+
+# ---------------------------------------------------------------------------
 # Test file discovery
 # ---------------------------------------------------------------------------
 def is_test_file(path):
@@ -456,7 +486,7 @@ def assert_sensitive_equality(test):
 # Findings
 # ---------------------------------------------------------------------------
 class Finding:
-    __slots__ = ("file", "line", "code", "detail", "conf", "snippet")
+    __slots__ = ("file", "line", "code", "detail", "conf", "snippet", "layer")
 
     def __init__(self, file, line, code, detail=""):
         self.file = file
@@ -465,6 +495,7 @@ class Finding:
         self.detail = detail
         self.conf = CASES[code][1]  # effective confidence; run() may override it
         self.snippet = ""           # normalized source at the finding; set in analyze_file
+        self.layer = "logic"        # logic | web | browser; set per file in analyze_file
 
     def dict(self):
         title = CASES[self.code][0]
@@ -475,6 +506,7 @@ class Finding:
             "confidence": self.conf,
             "title": title,
             "detail": self.detail,
+            "layer": self.layer,
         }
 
 
@@ -934,6 +966,7 @@ def analyze_file(file):
         if re.match(r"^\s*#\s*assert\b", line):
             findings.append(Finding(file, i, "CC"))
 
+    layer = detect_file_layer(tree)
     ignores = parse_inline_ignores(source)
     src_lines = source.splitlines()
     kept = []
@@ -943,6 +976,7 @@ def analyze_file(file):
             continue
         if 1 <= f.line <= len(src_lines):
             f.snippet = " ".join(src_lines[f.line - 1].split())
+        f.layer = layer
         kept.append(f)
     return kept
 
@@ -1021,7 +1055,7 @@ def render_sarif(findings):
             "ruleId": a.code,
             "level": _sarif_level(a.conf),
             "message": {"text": text},
-            "properties": {"tags": [CASES[a.code][2]]},
+            "properties": {"tags": [CASES[a.code][2], "layer:" + a.layer]},
             "locations": [{
                 "physicalLocation": {
                     "artifactLocation": {"uri": _rel_uri(a.file)},

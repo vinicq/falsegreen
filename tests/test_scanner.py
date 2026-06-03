@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 
 from falsegreen.scanner import (
     run, analyze_file, main, load_config, effective_conf,
-    render_sarif, render_junit, summary_line,
+    render_sarif, render_junit, render_json, summary_line,
     fingerprint, load_baseline,
 )
 
@@ -201,6 +201,48 @@ def test_raises_wrapping_single_call_is_clean(tmp_path):
                 boom()
     """)
     assert "C19" not in codes
+
+
+# --- #20: layer detection (metadata only, no behavior change) ---------------
+
+def _findings(tmp_path, code):
+    f = tmp_path / "test_sample.py"
+    f.write_text(textwrap.dedent(code), encoding="utf-8")
+    return run([str(f)])
+
+
+def test_layer_logic_by_default(tmp_path):
+    fs = _findings(tmp_path, """
+        def test_x():
+            assert True
+    """)
+    assert fs and all(a.layer == "logic" for a in fs)
+
+
+def test_layer_web_from_web_import(tmp_path):
+    fs = _findings(tmp_path, """
+        import fastapi
+        def test_x():
+            assert True
+    """)
+    assert fs and all(a.layer == "web" for a in fs)
+
+
+def test_layer_browser_from_playwright_import(tmp_path):
+    fs = _findings(tmp_path, """
+        from playwright.sync_api import Page
+        def test_x():
+            assert True
+    """)
+    assert fs and all(a.layer == "browser" for a in fs)
+
+
+def test_layer_in_json_and_sarif(tmp_path):
+    f = _write(tmp_path / "test_h.py", "import httpx\ndef test_x():\n    assert True\n")
+    findings = run([f])
+    assert json.loads(render_json(findings))[0]["layer"] == "web"
+    doc = json.loads(render_sarif(findings))
+    assert "layer:web" in doc["runs"][0]["results"][0]["properties"]["tags"]
 
 
 # --- regressions: it must NOT flag legitimate code (review counter-examples) -
@@ -723,9 +765,9 @@ def test_sarif_carries_the_judgment_tag(tmp_path):
     findings = run([f])
     doc = json.loads(render_sarif(findings))
     rule = doc["runs"][0]["tool"]["driver"]["rules"][0]
-    assert rule["properties"]["tags"] == ["J2"]  # C5 is J2
+    assert rule["properties"]["tags"] == ["J2"]  # C5 is J2 (rule tag = judgment only)
     result = doc["runs"][0]["results"][0]
-    assert result["properties"]["tags"] == ["J2"]
+    assert "J2" in result["properties"]["tags"]  # result tags also carry layer:*
 
 
 def test_summary_has_by_judgment_line(tmp_path, capsys):
