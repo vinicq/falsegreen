@@ -45,6 +45,26 @@ agent-based workflows detect and refactor test smells (Phi-4-14B, pass@5 of 75.3
 six generated pull requests merged into open-source projects). Backs falsegreen's
 LLM semantic pass and the AI-applies-the-fix path of the dual-use report.
 
+**Evaluating LLMs Effectiveness in Detecting and Correcting Test Smells: An
+Empirical Study.** E. G. Santana Jr., Jander Pereira Santos Junior, Erlon P.
+Almeida, Iftekhar Ahmed, Paulo Anselmo da Mota Silveira Neto, Eduardo Santana de
+Almeida. 2025. arXiv:2506.07594. Found that LLM-driven correction sometimes
+introduces new smells and reduces test coverage (only Gemini improved coverage).
+Direct evidence behind falsegreen's validation gate for the AI-fix path: a proposed
+fix must be checked, not trusted.
+
+**Evaluating Large Language Models in Detecting Test Smells.** Keila Lucas, Rohit
+Gheyi, Elvys Soares, Márcio Ribeiro, Ivan Machado. SBES 2024. arXiv:2407.19261.
+LLMs detected 21 of 30 test smell types across seven languages (ChatGPT-4 best).
+Backs falsegreen's choice to handle cross-language coverage in the language-agnostic
+semantic pass rather than in the Python-only scanner.
+
+**Test smells in LLM-Generated Unit Tests.** Wendkûuni C. Ouédraogo, Yinghua Li,
+Xueqi Dang, Xunzhu Tang, Anil Koyuncu, Jacques Klein, David Lo, Tegawendé F.
+Bissyandé. 2024. arXiv:2410.10628. Empirical evidence that LLM-generated tests carry
+many smells, supporting falsegreen's premise that AI coding assistants are a
+high-volume source of tests that need an effectiveness check.
+
 **SENTINEL: Processo para Remoção Automática de Test Smells.** Adriano Pizzini.
 PhD thesis, PUCPR / PPGIa, Curitiba, 2024. Advisor Andreia Malucelli, co-advisor
 Sheila Reinehr. SENTINEL validates a test refactoring by cloning the project and
