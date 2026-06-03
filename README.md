@@ -205,7 +205,9 @@ different natures.
   every commit, the self-scan, because the false-positive detector is not allowed
   to contain one. And it is validated against real-world Python projects (Python
   web and service codebases with large test suites), where it has found and fixed
-  its own false positives before they shipped.
+  its own false positives before they shipped. Every project it has been run on,
+  what each run revealed, and the decision that followed are logged in
+  [VALIDATION.md](VALIDATION.md).
 - **The semantic pass (LLM, any language).** Cross-language coverage runs through
   this pass, so its reliability is measured, not assumed. The validation is a
   benchmark corpus: tests planted with a known ground truth, a test that mocks the
