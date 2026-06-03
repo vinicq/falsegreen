@@ -20,6 +20,7 @@ Confidence in the scanner: **HIGH** blocks the commit, **LOW** warns only.
 | 4 | Forgotten test pytest never collects (name not `test_`, or a nested test def) | `C4` | HIGH | pytest collection rules |
 | 4b | `Test*` class with `__init__` (collected only if subclassed) | `C4b` | LOW | Constructor Initialization |
 | 20 | `assert` in dead code after `return`/`raise`/`break`/`continue`/`fail()` | `C20` | HIGH | Fully Rotten Green Test (Soares 2023) |
+| 21 | every `assert` is conditional, none runs unconditionally | `C21` | LOW | Context-Dependent Rotten Green (Soares 2023) |
 
 Notes.
 - Every scanner code carries a judgment tag (J1-J6, see SKILL.md) in `CASES`, so
@@ -33,6 +34,13 @@ Notes.
   in the SAME block is structurally unreachable, it never runs. HIGH, same
   certainty as `assert True`. Scanned per block, so a `return` inside one branch
   does not orphan a sibling check at the parent level (that stays clean).
+- **C21**: a function-scoped cousin of C1. Fires when the test has at least one
+  check but NONE runs unconditionally (every assert is inside an `if`/branch). A
+  false condition then passes the test vacuously. Stays clean when a check runs on
+  every path: a top-level assert, an exhaustive `if/else` where both sides assert,
+  a `with pytest.raises`, or a `for` over a non-empty literal. When C21 fires it
+  owns the function's conditional asserts and the per-assert C1 is suppressed, so
+  one smell is reported once.
 - **C2 vs C2b**: a truly empty body is a near-certain false positive (HIGH). A body
   that calls production code but never asserts is flagged LOW, because the check
   may live in a helper it calls.
