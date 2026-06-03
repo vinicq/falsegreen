@@ -50,4 +50,6 @@ jobs:
           name: dist
           path: dist/
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@6733eb7d741f0b11ec6a39b58540dab7590f9b7d  # v1.14.0
+        # Docker action: its ghcr.io image is tagged by release, not commit SHA,
+        # so a SHA pin fails to pull. release/v1 is the maintained, recommended ref.
+        uses: pypa/gh-action-pypi-publish@release/v1
