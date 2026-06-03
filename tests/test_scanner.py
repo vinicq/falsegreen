@@ -204,6 +204,87 @@ def test_helper_function_is_not_uncollected_test(tmp_path):
     assert "C4" not in codes
 
 
+# --- C6: boolean predicates are real checks, not weak truthiness -----------
+# (regression: real-project validation flagged isinstance/exists/any as C6)
+
+def test_isinstance_assert_is_not_weak(tmp_path):
+    # isinstance(...) inside assert is a genuine type assertion, not "came back"
+    codes = scan_source(tmp_path, """
+        def test_x():
+            assert isinstance(get_backend(), Backend)
+    """)
+    assert "C6" not in codes
+
+
+def test_path_predicate_calls_are_not_weak(tmp_path):
+    # .exists()/.is_dir()/any() return real booleans: the expected result itself
+    codes = scan_source(tmp_path, """
+        def test_x(tmp_path):
+            p = build(tmp_path)
+            assert p.exists()
+            assert p.is_dir()
+            assert any(p.iterdir())
+    """)
+    assert "C6" not in codes
+
+
+def test_is_prefixed_predicate_call_is_not_weak(tmp_path):
+    codes = scan_source(tmp_path, """
+        def test_x():
+            assert user().is_admin()
+    """)
+    assert "C6" not in codes
+
+
+def test_bare_truthiness_call_is_still_weak(tmp_path):
+    # the actual smell C6 targets: assert <value that just came back> survives
+    codes = scan_source(tmp_path, """
+        def test_x():
+            assert get_user()
+    """)
+    assert "C6" in codes
+
+
+def test_bare_attribute_predicate_without_parens_is_still_weak(tmp_path):
+    # a bare `path.exists` (missing parens) is always truthy: must stay flagged
+    codes = scan_source(tmp_path, """
+        def test_x(path):
+            assert path.exists
+    """)
+    assert "C6" in codes
+
+
+# --- C1: a loop over a non-empty literal always runs -----------------------
+
+def test_assert_in_loop_over_literal_tuple_is_not_c1(tmp_path):
+    # for q in (a, b, c): assert ... -> the body always runs, not C1
+    codes = scan_source(tmp_path, """
+        def test_x(sm):
+            for q in (sm.a, sm.b, sm.c):
+                assert q.maxsize == 200
+    """)
+    assert "C1" not in codes
+
+
+def test_assert_in_loop_over_runtime_value_is_still_c1(tmp_path):
+    # iterating a runtime value that may be empty -> assert can be skipped: C1
+    codes = scan_source(tmp_path, """
+        def test_x(results):
+            for meta in results["rows"]:
+                assert meta["id"] == 1
+    """)
+    assert "C1" in codes
+
+
+def test_assert_in_if_is_still_c1(tmp_path):
+    codes = scan_source(tmp_path, """
+        def test_x(cond):
+            if cond:
+                assert compute() == 1
+    """)
+    assert "C1" in codes
+
+
 # --- config knobs ----------------------------------------------------------
 
 def test_inline_ignore_silences_finding(tmp_path):

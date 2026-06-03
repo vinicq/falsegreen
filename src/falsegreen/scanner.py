@@ -216,9 +216,36 @@ def _const_value(node):
     return None
 
 
+# Builtins / methods that return a genuine bool. Asserting one of these IS the
+# expected-result check (a type/shape/predicate), not a weak "something came
+# back". Only applies to a CALL (the predicate is actually invoked) - a bare
+# attribute like `assert path.exists` (missing parens) stays weak on purpose.
+BOOL_PREDICATE_CALLS = {
+    "isinstance", "issubclass", "callable", "hasattr", "any", "all",
+    "exists", "is_file", "is_dir", "isfile", "isdir", "is_absolute",
+    "is_symlink", "is_mount", "samefile",
+    "startswith", "endswith",
+    "isdigit", "isalpha", "isalnum", "isspace", "isupper", "islower",
+    "istitle", "isidentifier", "isnumeric", "isdecimal", "isprintable",
+    "is_integer", "issubset", "issuperset", "isdisjoint",
+}
+# Heuristic is name-based, not return-type based (the AST has no types): a method
+# `is_recommended_value()` returning a non-bool would be wrongly exempted. The
+# convention is strong enough that the recall give-back is worth killing the
+# isinstance/exists/any false positives; the semantic pass is the type backstop.
+BOOL_PREDICATE_PREFIX = re.compile(
+    r"^(is|has|can|should|was|were|are|did|does|will)_"
+)
+
+
 def assert_weak(test):
     # Truthiness of something: assert result / assert obj.attr / assert f()
-    if isinstance(test, (ast.Name, ast.Attribute, ast.Subscript, ast.Call)):
+    if isinstance(test, ast.Call):
+        fname = dotted_name(test.func).split(".")[-1]
+        if fname in BOOL_PREDICATE_CALLS or BOOL_PREDICATE_PREFIX.match(fname):
+            return None  # genuine boolean predicate, a real expected-result check
+        return "truthiness of a value, not compared to an expected result"
+    if isinstance(test, (ast.Name, ast.Attribute, ast.Subscript)):
         return "truthiness of a value, not compared to an expected result"
     if isinstance(test, ast.Compare) and len(test.ops) == 1:
         op = test.ops[0]
@@ -424,6 +451,12 @@ def analyze_function(func, file, findings, in_class=False):
 
     for n in children_no_nesting(func):
         if isinstance(n, (ast.If, ast.For, ast.While)):
+            # A for over a non-empty literal collection always runs its body, so
+            # the assert is never skipped: not C1. (`for q in (a, b, c): assert`).
+            if isinstance(n, ast.For) and isinstance(
+                n.iter, (ast.List, ast.Tuple, ast.Set)
+            ) and len(n.iter.elts) > 0:
+                continue
             for sub in ast.walk(n):
                 if isinstance(sub, ast.Assert):
                     findings.append(Finding(file, sub.lineno, "C1"))
