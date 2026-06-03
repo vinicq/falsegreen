@@ -31,11 +31,20 @@ Usage:
 
 import argparse
 import ast
+import fnmatch
 import json
 import os
 import re
 import subprocess
 import sys
+
+try:
+    import tomllib as _toml  # Python 3.11+
+except ImportError:  # pragma: no cover - depends on interpreter version
+    try:
+        import tomli as _toml  # backport for 3.8-3.10
+    except ImportError:
+        _toml = None  # no TOML reader: config is a silent no-op (3.8 without tomli)
 
 # ---------------------------------------------------------------------------
 # Case catalog (mirrors the guide). code -> (title, confidence)
@@ -91,6 +100,105 @@ IGNORED_DIRS = {
 }
 
 IGNORE_RE = re.compile(r"#\s*falsegreen:\s*ignore(?:\[([A-Za-z0-9, ]+)\])?")
+
+
+# ---------------------------------------------------------------------------
+# Config file ([tool.falsegreen] in pyproject.toml, or .falsegreen.toml)
+# ---------------------------------------------------------------------------
+SEVERITY_VALUES = {"high", "low", "off"}
+EMPTY_CONFIG = {"disable": set(), "exclude": [], "severity": {}}
+
+
+def _read_toml(path):
+    if _toml is None:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            return _toml.load(fh)
+    except Exception:
+        return None
+
+
+def _normalize_config(data):
+    """Validate a raw [tool.falsegreen] mapping into the internal config shape."""
+    if not data:
+        return {"disable": set(), "exclude": [], "severity": {}}
+    disable = {str(c) for c in (data.get("disable") or [])}
+    exclude = [str(g) for g in (data.get("exclude") or [])]
+    severity = {}
+    for code, level in (data.get("severity") or {}).items():
+        if isinstance(level, str) and level.lower() in SEVERITY_VALUES:
+            severity[code] = level.lower()
+        else:
+            sys.stderr.write(
+                "falsegreen: ignoring invalid severity %r for %s (use high|low|off)\n"
+                % (level, code))
+    return {"disable": disable, "exclude": exclude, "severity": severity}
+
+
+def load_config(start=None, explicit=None):
+    """Resolve config to {'disable': set, 'exclude': [globs], 'severity': {code: level}}.
+
+    With `explicit`, read that file (a pyproject.toml is read under [tool.falsegreen];
+    any other name is read as a flat table). Otherwise auto-discover in `start`
+    (default cwd): prefer .falsegreen.toml (flat table) over pyproject.toml
+    [tool.falsegreen]. A no-op (empty config) when no file is found or no TOML
+    reader is available (Python 3.8 without tomli).
+    """
+    data = None
+    if explicit:
+        raw = _read_toml(explicit)
+        if raw is not None:
+            data = raw.get("tool", {}).get("falsegreen", {}) \
+                if os.path.basename(explicit) == "pyproject.toml" else raw
+    else:
+        base = start or os.getcwd()
+        fg = os.path.join(base, ".falsegreen.toml")
+        pp = os.path.join(base, "pyproject.toml")
+        if os.path.isfile(fg):
+            data = _read_toml(fg)
+        elif os.path.isfile(pp):
+            raw = _read_toml(pp)
+            if raw is not None:
+                data = raw.get("tool", {}).get("falsegreen", {})
+    return _normalize_config(data)
+
+
+def effective_conf(code, config=None, cli_disable=None):
+    """A code's effective confidence: 'high' | 'low' | 'off'.
+
+    Precedence: CLI --disable > config (disable/severity) > catalog default.
+    Inline `# falsegreen: ignore` is applied per line earlier, in analyze_file.
+    """
+    if cli_disable and code in cli_disable:
+        return "off"
+    if config:
+        if code in config.get("disable", ()):
+            return "off"
+        sev = config.get("severity", {})
+        if code in sev:
+            return sev[code]
+    return CASES[code][1]
+
+
+def _apply_exclude(files, globs):
+    """Drop files matching any exclude glob (matched against the relative path,
+    the forward-slash full path, and the basename)."""
+    if not globs:
+        return files
+    kept = []
+    for f in files:
+        full = f.replace("\\", "/")
+        try:
+            rel = os.path.relpath(f).replace("\\", "/")
+        except ValueError:  # different drive on Windows
+            rel = full
+        base = os.path.basename(full)
+        if any(fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(full, g)
+               or fnmatch.fnmatch(base, g) for g in globs):
+            continue
+        kept.append(f)
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -279,21 +387,22 @@ def assert_exact_float(test):
 # Findings
 # ---------------------------------------------------------------------------
 class Finding:
-    __slots__ = ("file", "line", "code", "detail")
+    __slots__ = ("file", "line", "code", "detail", "conf")
 
     def __init__(self, file, line, code, detail=""):
         self.file = file
         self.line = line
         self.code = code
         self.detail = detail
+        self.conf = CASES[code][1]  # effective confidence; run() may override it
 
     def dict(self):
-        title, conf = CASES[self.code]
+        title = CASES[self.code][0]
         return {
             "file": self.file,
             "line": self.line,
             "code": self.code,
-            "confidence": conf,
+            "confidence": self.conf,
             "title": title,
             "detail": self.detail,
         }
@@ -640,8 +749,8 @@ def print_text(findings):
     if not findings:
         print("No false-positive patterns found in the analyzed tests.")
         return
-    highs = [a for a in findings if CASES[a.code][1] == "high"]
-    lows = [a for a in findings if CASES[a.code][1] == "low"]
+    highs = [a for a in findings if a.conf == "high"]
+    lows = [a for a in findings if a.conf == "low"]
 
     def block(title, items):
         if not items:
@@ -661,21 +770,26 @@ def print_text(findings):
     print("pass: run /falsegreen so the expected value is checked against intent.")
 
 
-def run(paths, staged=False, disable=None):
-    disable = set(disable or [])
+def run(paths, staged=False, disable=None, config=None, config_path=None):
+    cli_disable = set(disable or [])
+    if config is None:
+        config = load_config(explicit=config_path)
     if staged:
         files = staged_files()
     elif paths:
         files = discover(paths)
     else:
         files = discover(["."])
+    files = _apply_exclude(files, config.get("exclude", []))
 
     findings = []
     seen = set()
     for f in files:
         for a in analyze_file(f):
-            if a.code in disable:
+            conf = effective_conf(a.code, config, cli_disable)
+            if conf == "off":
                 continue
+            a.conf = conf
             key = (a.file, a.line, a.code, a.detail)
             if key in seen:
                 continue
@@ -691,18 +805,20 @@ def main(argv=None):
     ap.add_argument("--staged", action="store_true", help="only test files staged in git")
     ap.add_argument("--json", action="store_true", help="JSON output")
     ap.add_argument("--disable", default="", help="comma-separated case codes to skip (e.g. C6,C2b)")
+    ap.add_argument("--config", default=None,
+                    help="path to a .falsegreen.toml or pyproject.toml (default: auto-discover in cwd)")
     args = ap.parse_args(argv)
 
     disable = {c.strip() for c in args.disable.split(",") if c.strip()}
-    findings = run(args.paths, staged=args.staged, disable=disable)
+    findings = run(args.paths, staged=args.staged, disable=disable, config_path=args.config)
 
     if args.json:
         print(json.dumps([a.dict() for a in findings], ensure_ascii=False, indent=2))
     else:
         print_text(findings)
 
-    has_high = any(CASES[a.code][1] == "high" for a in findings)
-    has_low = any(CASES[a.code][1] == "low" for a in findings)
+    has_high = any(a.conf == "high" for a in findings)
+    has_low = any(a.conf == "low" for a in findings)
     if has_high:
         return 20
     if has_low:

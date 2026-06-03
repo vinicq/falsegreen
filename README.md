@@ -284,8 +284,28 @@ the package (`pip install falsegreen`) and the skill falls back to the CLI.
 - **Environment:** `FALSEGREEN_BLOCK=0` makes the pre-commit hook warn instead of
   block.
 
-(Project config via `[tool.falsegreen]`, baseline/ratchet mode for legacy repos,
-and SARIF/JUnit output are on the roadmap.)
+### Project config file
+
+Put a `[tool.falsegreen]` table in `pyproject.toml`, or a flat `.falsegreen.toml`
+at the repo root (the `.falsegreen.toml` wins if both exist):
+
+```toml
+[tool.falsegreen]
+disable = ["C13b"]          # turn these codes off everywhere
+exclude = ["tests/legacy/*"] # skip files matching these globs
+
+[tool.falsegreen.severity]
+C8 = "high"                  # promote: now blocks the commit (exit 20)
+C6 = "off"                   # same as adding C6 to disable
+```
+
+`severity` values are `high`, `low`, or `off`. Precedence, highest first:
+`--disable` on the CLI, then the inline `# falsegreen: ignore`, then this config,
+then the built-in default. Point at a specific file with `--config PATH`. The
+config reader uses the standard library on Python 3.11+ and `tomli` on older
+versions; on 3.8 without `tomli` it is a silent no-op.
+
+(Baseline/ratchet mode for legacy repos and SARIF/JUnit output are on the roadmap.)
 
 ---
 
