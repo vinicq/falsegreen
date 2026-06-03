@@ -48,10 +48,12 @@ LLM semantic pass and the AI-applies-the-fix path of the dual-use report.
 **Evaluating LLMs Effectiveness in Detecting and Correcting Test Smells: An
 Empirical Study.** E. G. Santana Jr., Jander Pereira Santos Junior, Erlon P.
 Almeida, Iftekhar Ahmed, Paulo Anselmo da Mota Silveira Neto, Eduardo Santana de
-Almeida. 2025. arXiv:2506.07594. Found that LLM-driven correction sometimes
-introduces new smells and reduces test coverage (only Gemini improved coverage).
-Direct evidence behind falsegreen's validation gate for the AI-fix path: a proposed
-fix must be checked, not trusted.
+Almeida. 2025. arXiv:2506.07594. Their conclusion: standalone LLM refactoring
+consistently compromises test coverage across all models, and they recommend a
+multi-agent system with a test-smell detector, a refactoring agent, and a test
+coverage checker that validates the change. That is precisely falsegreen's
+validation gate for the AI-fix path (a proposed fix must be checked, not trusted)
+and its multi-agent verify idea.
 
 **Evaluating Large Language Models in Detecting Test Smells.** Keila Lucas, Rohit
 Gheyi, Elvys Soares, Márcio Ribeiro, Ivan Machado. SBES 2024. arXiv:2407.19261.
@@ -62,8 +64,10 @@ semantic pass rather than in the Python-only scanner.
 **Test smells in LLM-Generated Unit Tests.** Wendkûuni C. Ouédraogo, Yinghua Li,
 Xueqi Dang, Xunzhu Tang, Anil Koyuncu, Jacques Klein, David Lo, Tegawendé F.
 Bissyandé. 2024. arXiv:2410.10628. Empirical evidence that LLM-generated tests carry
-many smells, supporting falsegreen's premise that AI coding assistants are a
-high-volume source of tests that need an effectiveness check.
+many smells (Assertion Roulette, Magic Number Test most often). Those are
+maintainability smells rather than the false-green patterns falsegreen targets, so
+we use it as support for the broader premise that AI-written tests need a second
+reader, not as evidence about test effectiveness specifically.
 
 **SENTINEL: Processo para Remoção Automática de Test Smells.** Adriano Pizzini.
 PhD thesis, PUCPR / PPGIa, Curitiba, 2024. Advisor Andreia Malucelli, co-advisor
