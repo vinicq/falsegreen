@@ -88,6 +88,7 @@ CASES = {
     "C19": ("pytest.raises wraps more than one call (target may never be reached)", "low", "J1"),
     "C20": ("assertion in dead code after return/raise/fail (never runs)", "high", "J1"),
     "C21": ("every assertion is conditional, none runs unconditionally", "low", "J1"),
+    "C22": ("async test asserts but never awaits the unit (vacuous pass)", "off", "J1"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
 }
 
@@ -692,6 +693,26 @@ def _for_body_always_runs(stmt):
         stmt.iter, (ast.List, ast.Tuple, ast.Set)) and len(stmt.iter.elts) > 0
 
 
+def is_async_liar(func):
+    """An `async def test_*` that makes calls and asserts but never awaits anything
+    (no await, async with, or async for) and does not drive a loop itself
+    (asyncio.run / run_until_complete / anyio.run). The SUT call returns an
+    un-awaited coroutine, so the assertion checks the wrong object or the coroutine
+    never runs: a vacuous pass. C22 (off by default; async suites opt in)."""
+    if not isinstance(func, ast.AsyncFunctionDef):
+        return False
+    has_await = any(isinstance(n, (ast.Await, ast.AsyncWith, ast.AsyncFor))
+                    for n in ast.walk(func))
+    if has_await:
+        return False
+    drives_loop = any(
+        is_call_to(c, "asyncio.run", "run_until_complete", "anyio.run")
+        for c in ast.walk(func) if isinstance(c, ast.Call))
+    if drives_loop:
+        return False
+    return makes_any_call(func) and func_has_any_check(func)
+
+
 def runs_a_check_unconditionally(stmts):
     """True if some verification in this block runs on every path through it.
 
@@ -790,6 +811,10 @@ def analyze_function(func, file, findings, in_class=False):
                     if isinstance(sub, ast.Assert):
                         findings.append(Finding(file, sub.lineno, "C1"))
                         break
+
+    # C22: an async test that asserts but never awaits (off by default, J1).
+    if is_async_liar(func):
+        findings.append(Finding(file, func.lineno, "C22"))
 
     # C20: a check that sits AFTER an unconditional terminator in the same block
     # (return / raise / break / continue / pytest.fail() / assert False) is dead

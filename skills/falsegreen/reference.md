@@ -21,6 +21,7 @@ Confidence in the scanner: **HIGH** blocks the commit, **LOW** warns only.
 | 4b | `Test*` class with `__init__` (collected only if subclassed) | `C4b` | LOW | Constructor Initialization |
 | 20 | `assert` in dead code after `return`/`raise`/`break`/`continue`/`fail()` | `C20` | HIGH | Fully Rotten Green Test (Soares 2023) |
 | 21 | every `assert` is conditional, none runs unconditionally | `C21` | LOW | Context-Dependent Rotten Green (Soares 2023) |
+| 22 | `async` test asserts but never awaits the unit | `C22` | OFF by default | The Liar (async) |
 
 Notes.
 - Every scanner code carries a judgment tag (J1-J6, see SKILL.md) in `CASES`, so
@@ -85,6 +86,13 @@ Notes.
   are the usual all/none ratio sentinels (0/N, N/N).
 - **C9**: a `pytest.raises(Exception)` swallows the wrong error too, including a
   `NameError` from a typo in the test. Pin the exact type and a `match`.
+- **C22**: an `async def test_*` that makes calls and asserts but never awaits
+  (no `await`/`async with`/`async for`) and does not drive a loop itself
+  (`asyncio.run`/`run_until_complete`/`anyio.run`). The unit call returns an
+  un-awaited coroutine, so the assertion checks the wrong object or the coroutine
+  never runs. OFF by default (async suites opt in via
+  `[tool.falsegreen] severity = { C22 = "low" }`); some async tests legitimately
+  assert pre-computed sync data.
 - **C19**: a `with pytest.raises(...)` block that wraps more than one statement.
   An earlier line can raise the expected error, so the call you meant to test is
   never reached and the test still passes. Keep only the one call that should raise
@@ -319,7 +327,7 @@ you are wrong, so say "needs review" when unsure.
 
 ## Scanner code index
 
-`C1 C2 C2b C3 C4 C4b C5 C6 C7 C8 C9 C13 C13b C14 C16 C17 C18 C19 C20 C21 CC`
+`C1 C2 C2b C3 C4 C4b C5 C6 C7 C8 C9 C13 C13b C14 C16 C17 C18 C19 C20 C21 C22 CC` (C22 off by default)
 
 Each code carries a judgment tag (J1-J6) in the scanner's `CASES`, so text/SARIF/
 `--summary` output groups by category. Findings also carry a `layer` (logic | web |

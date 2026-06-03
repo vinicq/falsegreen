@@ -7,6 +7,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- C22 (OFF by default): an `async def test_*` that asserts but never awaits the unit
+  (The Liar). Opt in via `[tool.falsegreen] severity = { C22 = "low" }`. First
+  off-by-default code; the resolver already supported an `off` catalog default.
 - Layer detection: each finding carries a `layer` (logic | web | browser) inferred
   from the file's imports, surfaced in JSON output and as a `layer:*` SARIF tag.
   Lets a team triage by layer (a finding in pure logic is higher-signal than one in
