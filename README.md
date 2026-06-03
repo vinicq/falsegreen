@@ -392,4 +392,7 @@ falsegreen/
   (the four places it touches), the false-positive policy, Conventional Commits.
 - [SECURITY.md](SECURITY.md) - how to report a vulnerability privately.
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) - Contributor Covenant 2.1.
+- [CREDITS.md](CREDITS.md) - the research falsegreen builds on (the Soares rotten-
+  green work, PyNose, the test-smell catalog, and the agentic-LLM refactoring study),
+  with author credit.
 - License: **MIT**, see [LICENSE](LICENSE).
