@@ -273,22 +273,38 @@ def test_assert_in_loop_over_literal_tuple_is_not_c1(tmp_path):
     assert "C1" not in codes
 
 
-def test_assert_in_loop_over_runtime_value_is_still_c1(tmp_path):
-    # iterating a runtime value that may be empty -> assert can be skipped: C1
+def test_only_conditional_asserts_is_c21_not_c1(tmp_path):
+    # every assert is conditional and none runs unconditionally: C21 owns it,
+    # and the per-assert C1 is suppressed to avoid double-reporting one smell.
     codes = scan_source(tmp_path, """
         def test_x(results):
             for meta in results["rows"]:
                 assert meta["id"] == 1
     """)
-    assert "C1" in codes
+    assert "C21" in codes
+    assert "C1" not in codes
 
 
-def test_assert_in_if_is_still_c1(tmp_path):
+def test_single_conditional_assert_is_c21_not_c1(tmp_path):
     codes = scan_source(tmp_path, """
         def test_x(cond):
             if cond:
                 assert compute() == 1
     """)
+    assert "C21" in codes
+    assert "C1" not in codes
+
+
+def test_c1_still_fires_when_an_unconditional_assert_exists(tmp_path):
+    # a top-level assert means the test is not vacuous (not C21), but the extra
+    # conditional assert can still be skipped, so C1 still applies.
+    codes = scan_source(tmp_path, """
+        def test_x(results):
+            assert results is not None
+            for meta in results["rows"]:
+                assert meta["id"] == 1
+    """)
+    assert "C21" not in codes
     assert "C1" in codes
 
 
@@ -612,3 +628,58 @@ def test_summary_has_by_judgment_line(tmp_path, capsys):
     main([f, "--summary"])
     err = capsys.readouterr().err
     assert "by judgment:" in err and "J2:1" in err
+
+
+# --- C21: every assertion conditional (Context-Dependent Rotten Green) -------
+
+def test_flags_only_branch_asserts(tmp_path):
+    # the if asserts, the else only logs: a false cond means nothing is checked
+    assert "C21" in scan_source(tmp_path, """
+        def test_x(cond):
+            if cond:
+                assert a() == 1
+            else:
+                log("skip")
+    """)
+
+
+def test_top_level_assert_is_not_c21(tmp_path):
+    codes = scan_source(tmp_path, """
+        def test_x(cond):
+            if cond:
+                assert a() == 1
+            assert b() == 2
+    """)
+    assert "C21" not in codes
+
+
+def test_exhaustive_if_else_both_assert_is_not_c21(tmp_path):
+    # every path asserts something, so a check always runs: not vacuous
+    codes = scan_source(tmp_path, """
+        def test_x(cond):
+            if cond:
+                assert a() == 1
+            else:
+                assert a() == 2
+    """)
+    assert "C21" not in codes
+
+
+def test_with_raises_is_an_unconditional_check_not_c21(tmp_path):
+    codes = scan_source(tmp_path, """
+        import pytest
+        def test_x():
+            with pytest.raises(ValueError, match="bad"):
+                boom()
+    """)
+    assert "C21" not in codes
+
+
+def test_loop_over_literal_asserts_is_not_c21(tmp_path):
+    # for over a non-empty literal always runs, so the assert is unconditional
+    codes = scan_source(tmp_path, """
+        def test_x(sm):
+            for q in (sm.a, sm.b):
+                assert q.maxsize == 200
+    """)
+    assert "C21" not in codes

@@ -86,6 +86,39 @@ def test_x():
     assert result == 42
 ```
 
+## 1c. Every check in the test is behind an "if", so one might run, or none
+
+In the real world: every inspection on the checklist starts with "if you have
+time". On a busy day there is never time, so the whole checklist is skipped and
+the form still comes back signed.
+
+In code, the test has checks, but none of them runs on its own: each `assert` is
+inside an `if`, and there is no check at the top level. If the condition is false
+at runtime, the test reaches the end having verified nothing and still passes.
+This is worse than a single guarded check (case 1), because the whole test can go
+vacuous, not just one line.
+
+```python
+# Lying: if "cond" is false, no assert runs at all
+def test_x(cond):
+    if cond:
+        assert a() == 1
+    else:
+        log("nothing checked here")
+```
+
+How to confirm it works: make at least one check run on every path. Put a real
+assertion at the top level, or assert in both the `if` and the `else`, so a check
+fires no matter which branch is taken.
+
+```python
+def test_x(cond):
+    result = run(cond)
+    assert result.ok          # runs no matter what
+    if cond:
+        assert result.value == 1
+```
+
 ## 2. The test checks nothing (no assertion at all)
 
 In the real world: the inspector turns the machine on, sees it powered up, and

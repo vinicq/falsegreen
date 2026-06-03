@@ -85,6 +85,7 @@ CASES = {
     "C16": ("result depends on time, randomness or a fixed sleep", "low", "J1"),
     "C17": ("skip inside a broad except hides a real failure", "high", "J1"),
     "C20": ("assertion in dead code after return/raise/fail (never runs)", "high", "J1"),
+    "C21": ("every assertion is conditional, none runs unconditionally", "low", "J1"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
 }
 
@@ -603,6 +604,57 @@ def dead_checks_after_terminator(stmts):
     return dead
 
 
+def _for_body_always_runs(stmt):
+    """A for over a non-empty literal collection always runs its body."""
+    return isinstance(stmt, ast.For) and isinstance(
+        stmt.iter, (ast.List, ast.Tuple, ast.Set)) and len(stmt.iter.elts) > 0
+
+
+def runs_a_check_unconditionally(stmts):
+    """True if some verification in this block runs on every path through it.
+
+    A check directly in the block runs. A `with`/`try` body runs. A `for` over a
+    non-empty literal runs. An `if` whose every branch (including a closing else)
+    runs a check is exhaustive, so a check always runs.
+    """
+    for stmt in stmts:
+        if _stmt_is_check(stmt):  # includes a top-level `with pytest.raises`
+            return True
+        if isinstance(stmt, ast.With):
+            if runs_a_check_unconditionally(stmt.body):
+                return True
+        elif isinstance(stmt, ast.Try):
+            if runs_a_check_unconditionally(stmt.body) \
+                    or runs_a_check_unconditionally(stmt.finalbody):
+                return True
+        elif _for_body_always_runs(stmt):
+            if runs_a_check_unconditionally(stmt.body):
+                return True
+        elif isinstance(stmt, ast.If):
+            # exhaustive only if there is an else and BOTH sides run a check
+            if stmt.orelse and runs_a_check_unconditionally(stmt.body) \
+                    and runs_a_check_unconditionally(stmt.orelse):
+                return True
+    return False
+
+
+def func_has_any_check(func):
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Assert):
+            return True
+        if isinstance(n, ast.Call):
+            t = dotted_name(n.func)
+            last = t.split(".")[-1]
+            if last in MOCK_ASSERTS_VALID or last.startswith("assert") \
+                    or t.endswith("raises"):
+                return True
+        if isinstance(n, ast.With):
+            for item in n.items:
+                if is_call_to(item.context_expr, "pytest.raises", "raises"):
+                    return True
+    return False
+
+
 def analyze_function(func, file, findings, in_class=False):
     line = func.lineno
     mock_names = gather_mock_names(func)
@@ -634,18 +686,26 @@ def analyze_function(func, file, findings, in_class=False):
                 if weak:
                     findings.append(Finding(file, n.lineno, "C6", weak))
 
-    for n in children_no_nesting(func):
-        if isinstance(n, (ast.If, ast.For, ast.While)):
-            # A for over a non-empty literal collection always runs its body, so
-            # the assert is never skipped: not C1. (`for q in (a, b, c): assert`).
-            if isinstance(n, ast.For) and isinstance(
-                n.iter, (ast.List, ast.Tuple, ast.Set)
-            ) and len(n.iter.elts) > 0:
-                continue
-            for sub in ast.walk(n):
-                if isinstance(sub, ast.Assert):
-                    findings.append(Finding(file, sub.lineno, "C1"))
-                    break
+    # C21: every assertion in the test is conditional and none runs
+    # unconditionally, so a false condition at runtime makes the whole test pass
+    # vacuously. A function-scoped, higher-signal cousin of C1. When it fires it
+    # OWNS the function's conditional asserts, so the per-assert C1 below is
+    # suppressed for this function to avoid double-reporting one smell.
+    c21_fired = func_has_any_check(func) and not runs_a_check_unconditionally(func.body)
+    if c21_fired:
+        findings.append(Finding(file, line, "C21"))
+
+    if not c21_fired:
+        for n in children_no_nesting(func):
+            if isinstance(n, (ast.If, ast.For, ast.While)):
+                # A for over a non-empty literal always runs its body, so the
+                # assert is never skipped: not C1. (`for q in (a, b, c): assert`).
+                if _for_body_always_runs(n):
+                    continue
+                for sub in ast.walk(n):
+                    if isinstance(sub, ast.Assert):
+                        findings.append(Finding(file, sub.lineno, "C1"))
+                        break
 
     # C20: a check that sits AFTER an unconditional terminator in the same block
     # (return / raise / break / continue / pytest.fail() / assert False) is dead
