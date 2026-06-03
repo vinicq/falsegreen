@@ -1,0 +1,53 @@
+name: release
+
+# Builds the package and publishes it to PyPI via Trusted Publishing (OIDC).
+# No API token: the publish job exchanges a short-lived OIDC identity with PyPI.
+# Fires on a GitHub release being published, or manually for an existing tag.
+#
+# One-time human setup before the first run (see RELEASE.md / the issue):
+#   1. PyPI: add a Trusted Publisher for project `falsegreen`
+#      (owner vinicq, repo falsegreen, workflow release.yml, environment pypi).
+#   2. GitHub: create an environment named `pypi` (optionally tag-only + reviewer).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          python -m twine check dist/*
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # OIDC: the only credential the publish step needs
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@6733eb7d741f0b11ec6a39b58540dab7590f9b7d  # v1.14.0
