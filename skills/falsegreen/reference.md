@@ -163,12 +163,169 @@ characterization tests are not case-18 violations; do not flag them as such.
 
 ---
 
+## Semantic smell index (catalog cross-walk)
+
+The semantic pass decides six questions (SKILL.md, "The six judgments"). This index
+maps the test-smell catalog into those six, with a one-line cue. `[scanner: Cn]`
+means the AST already flags it (cross-reference the code, do not re-derive it);
+`[semantic]` means only this pass catches it. Aliases are folded into one entry.
+
+### J1. Does the assertion actually run? (rotten-green family)
+
+| Catalog smell | Cue | Owner |
+|---|---|---|
+| Conditional Test Logic / Guarded Test / Nested Conditional | assert nested in `if`/`for` that may not run | `[scanner: C1]` |
+| Context-Dependent Rotten Green | every assert is conditional, none unconditional | `[scanner: C21]` |
+| Fully Rotten Green | assert after an early `return`/`raise`, structurally bypassed | `[scanner: C20]` |
+| The Liar / Asynchronous Code | async test returns before the awaited assertion or callback runs | `[semantic]` (no async modeling yet) |
+| Skip Rotten Green | a `skip` reached before the assertion silences it | `[scanner: C17]` / `[semantic]` |
+
+Ask: trace control flow; is there a path on this test's inputs where no assertion
+fires?
+
+### J2. Is the oracle independent of the code?
+
+| Catalog smell | Cue | Owner |
+|---|---|---|
+| Frozen bug (case 18) | magic-number expected read off current output | `[semantic]` |
+| Re-implemented oracle (case 12) | expected computed by repeating the SUT's own formula | `[semantic]` |
+| Self-confirming snapshot | golden written from current output, then compared to it | `[scanner: C14]` / `[semantic]` |
+| Sensitive Equality | asserts `str()`/`repr()` of a value, not the value | `[scanner: C18]` |
+
+Ask: where did this expected value come from, and would it still be right if the
+code were wrong? Oracle hierarchy: spec > contract > human > code, code last.
+
+### J3. Real unit or a stand-in? (over-mock / neverfail family)
+
+| Catalog smell | Cue | Owner |
+|---|---|---|
+| Mocks the unit under test (case 10) | the SUT itself is patched, not its edges | `[semantic]` |
+| Tautological mock (case 11) | asserts exactly the value fed to the mock | `[semantic]` |
+| Neverfail / Tests That Can't Fail | no assertion, or only mocked calls with no verification | `[scanner: C2/C2b/C5/C13]` / `[semantic]` |
+
+Ask: did the mock replace an edge (network, disk, clock) or the thing being tested?
+
+### J4. Enough, and the right thing? (under-checking family)
+
+| Catalog smell | Cue | Owner |
+|---|---|---|
+| Weak assertion | truthiness only, `len(x) > 0`, loose `in` | `[scanner: C6]` |
+| Underspecification | tests MIN+1 and MIN-1 but never the boundary MIN | `[semantic]` |
+| Sneaky Checking | the real check lives in a helper at the wrong level | `[semantic]`; C2b exempts helper-held checks, so open the helper and confirm it asserts |
+| Lazy Test / Only Happy Path | covers the trivial case, skips what can break | `[semantic]` |
+| Web body-unverified | response asserted only by status, body never read | `[semantic]` (deferred C25) |
+
+Ask: name one real defect that would still pass this test. Never resolve by
+weakening; add the missing assertion.
+
+### J5. Coupled to internals? (brittle / false-alarm family)
+
+| Catalog smell | Cue | Owner |
+|---|---|---|
+| Testing Internal Implementation / The Inspector / X-Ray Specs | asserts private fields, internal state, or call order | `[semantic]` |
+| Invasion Of Privacy | test calls a private method directly (`obj._m`) | `[semantic]` |
+| Patched private method | the SUT's own internal method is mocked, enabling a tautology | `[semantic]` |
+
+Ask: would a behavior-preserving refactor break this test? If yes, it tests
+implementation, not behavior. Flag as a false-alarm risk, not a frozen bug.
+
+### J6. Passes in isolation, or only via shared state?
+
+| Catalog smell | Cue | Owner |
+|---|---|---|
+| Chain Gang / Order Dependent Tests / Dependent Test | one test mutates shared/DB state; the next depends on it | `[semantic]` (planned C24) |
+| Litter Bugs / Test Pollution | a module-global / singleton carries across tests | `[semantic]` (planned C24) |
+| Lonely Test / Interacting Tests | passes in the suite, fails alone | `[semantic]` |
+| Hidden Dependency | passes only when ambient pre-populated data exists | `[semantic]` |
+
+Ask: does this test pass run first, alone, with a fresh process and clean fixtures?
+If you cannot tell from the code, recommend the runtime check (run isolated; run the
+module shuffled with `pytest -p no:randomly`; a divergent result confirms it).
+
+### Deliberately out of scope
+
+NOT false-positive detectors, so the pass does not chase them: **Testing many
+things** (Eager Test, The Giant, Split Personality, Indirect Testing) is a
+localization smell, the test still fails on a real defect; **Assertion Roulette**
+and multi-assert-no-message are high-noise in pytest (the runner shows the failing
+expression); **naming/wording/size** smells have no bearing on whether the test can
+fail; **random-data** smells are C16's deterministic job. Flagging a maintainability
+smell as a false positive is itself a false positive, and the guardrail is precision
+over recall.
+
+---
+
+## Layer-aware adjustments
+
+The judgments are the same across layers; the idioms that count as a smell are not.
+Infer the layer first (SKILL.md protocol step 1), then read each judgment through it.
+The rule throughout: soften where a web/UI idiom is legitimately terser than pure
+logic, and raise priority only where the layer adds a real false-green path. Never
+weaken a pure-logic test by borrowing a web exemption.
+
+- **J1, UI/async layer - RAISE.** An un-awaited async assertion is the top J1 check
+  here: `expect(locator).toBeVisible()` with the `await` missing, a Playwright
+  `expect` whose promise is never awaited, a Python coroutine asserted without
+  `await`, or an assert fired after a fixed `sleep` instead of awaiting a condition.
+  All return a pending/truthy object and the test verifies nothing. Flag it high.
+- **J2, all layers - a labeled snapshot is NOT a frozen bug.** `toMatchSnapshot()` /
+  visual-diff / golden-master is a characterization test (Step 0); do not flag it as
+  case 18. The real J2 web smell is an oracle on the response's plumbing (a spy on
+  how a fetch was called, an ambient env file) instead of the rendered outcome.
+- **J3, web/UI layer.** Mocking the network edge (`fetch`, `axios`, `requests`, an
+  MSW handler) is correct, that is the edge. The smell is mocking the
+  component/handler under test itself, or asserting the canned response back.
+- **J4, web/UI layer - SOFTEN truthiness, ADD body-unverified.** A bare truthiness
+  check on a locator or response is the layer's normal idiom
+  (`expect(locator).toBeVisible()`), not C6-weak. Pure-logic truthiness stays weak.
+  The web-specific J4 smell to add: a response asserted only by status
+  (`assert resp.status_code == 200`) with the body never verified.
+- **J5, UI layer.** Asserting framework-internal structure (a React component's
+  private state, an exact DOM tree, hashed CSS-module class names) breaks on a safe
+  refactor. A user-visible assertion (role, accessible name, visible text) is fine.
+- **J6, all layers.** Browser/UI suites add their own shared state: a reused
+  page/context, `localStorage`/cookies a prior test left, a logged-in session a
+  sibling established. Same question: does it pass from a clean context, alone?
+
+---
+
+## Frontend cues by language
+
+The bundled scanner is Python/pytest only. JS/TS tests (Jest, Vitest, React Testing
+Library, Playwright, Cypress) get no static pass: judge them by hand against the six
+judgments. Precision still rules; a green JS suite means the author's prior is that
+you are wrong, so say "needs review" when unsure.
+
+- **Jest / Vitest (unit):** `expect(x).toBeTruthy()` / `.toBeDefined()` as the only
+  check -> J4 weak oracle. `expect(value).toBe(value)` both sides identical -> J1
+  self-compare. No `expect(...)` at all, or `expect` built but never asserted -> J1
+  assertionless. `expect(spy).toHaveBeenCalled()` with no assertion on the real
+  output -> J2/J3 interaction-only oracle. `it.skip`/`xit`/`it.only` narrowing the
+  run so the rest never executes -> J1. A dropped `await` on `expect(await fn())`,
+  or a returned promise the runner does not await -> J1 un-awaited (RAISE).
+- **React Testing Library:** `expect(element).toBeInTheDocument()` / `.toBeVisible()`
+  is the normal idiom, NOT weak. Querying by `data-testid` or asserting a hashed CSS
+  class name -> J5 coupled-to-internals (prefer role/text). A `queryBy...` whose null
+  result is never asserted -> J1 (the negative path is never checked).
+- **Playwright / Cypress (browser/E2E):** un-awaited `expect` is the top J1 check
+  (web-first assertions are promises; without `await` they resolve truthy and check
+  nothing). `toMatchSnapshot()`/`toHaveScreenshot()` -> labeled characterization
+  (J2/Step 0), not a frozen bug. `page.waitForTimeout(ms)` as the only sync before an
+  assert -> J6/C16-style race. Asserting only `response.status()` with the body never
+  read -> J4 body-unverified. Reusing a logged-in `context`/`storageState` a prior
+  test created -> J6 shared-state.
+
+---
+
 ## Scanner code index
 
-`C1 C2 C2b C3 C4 C4b C5 C6 C7 C8 C9 C13 C13b C14 C16 C17 CC`
+`C1 C2 C2b C3 C4 C4b C5 C6 C7 C8 C9 C13 C13b C14 C16 C17 C18 C19 C20 C21 CC`
 
-`CC` is a commented-out `assert` (a check switched off), flagged LOW by a text
-scan. Cases 10, 11, 12, 15, and 18 carry no scanner code: they are semantic-only.
+Each code carries a judgment tag (J1-J6) in the scanner's `CASES`, so text/SARIF/
+`--summary` output groups by category. Findings also carry a `layer` (logic | web |
+browser) in JSON and as a `layer:*` SARIF tag. `CC` is a commented-out `assert`,
+flagged LOW by a text scan. Cases 10, 11, 12, 15, and 18 carry no scanner code: they
+are semantic-only (see the index above).
 
 ## Tools worth pairing with this
 
