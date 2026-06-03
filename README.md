@@ -193,6 +193,29 @@ only near-certain, mechanically-unambiguous patterns are HIGH (they block). The
 rest are LOW (they warn) and are starting points for human or semantic judgment,
 not verdicts.
 
+### How falsegreen is validated
+
+A tool that flags tests for not protecting anything has to show it protects
+something itself. The two layers are validated differently, because they have
+different natures.
+
+- **The scanner (deterministic).** Every rule ships with two tests: one proving it
+  fires on the bad pattern, and at least one proving it stays quiet on a legitimate
+  look-alike. The second matters more. The scanner also runs on its own source on
+  every commit, the self-scan, because the false-positive detector is not allowed
+  to contain one. And it is validated against real-world Python projects (Python
+  web and service codebases with large test suites), where it has found and fixed
+  its own false positives before they shipped.
+- **The semantic pass (LLM, any language).** Cross-language coverage runs through
+  this pass, so its reliability is measured, not assumed. The validation is a
+  benchmark corpus: tests planted with a known ground truth, a test that mocks the
+  unit under test, one that copies the expected value from current output, one that
+  re-implements the production formula, in Python and in other languages, scored for
+  precision and recall with precision held above recall. Because the pass runs on an
+  LLM it is non-deterministic, so this is a periodic skill-validation artifact, not
+  a CI gate. (The corpus and its measured numbers are being built out; this section
+  will carry the figures once they land.)
+
 ---
 
 ## What falsegreen takes from the research, and what it leaves out
