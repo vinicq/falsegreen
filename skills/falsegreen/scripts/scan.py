@@ -327,11 +327,22 @@ def assert_always_true(test):
 
 def assert_self_compare(test):
     if isinstance(test, ast.Compare) and len(test.comparators) == 1:
-        if isinstance(test.ops[0], (ast.Eq, ast.Is)):
+        op = test.ops[0]
+        if isinstance(op, (ast.Eq, ast.Is)):
             try:
-                return ast.dump(test.left) == ast.dump(test.comparators[0])
+                identical = ast.dump(test.left) == ast.dump(test.comparators[0])
             except Exception:
                 return False
+            if not identical:
+                return False
+            # `x is x` / `obj.attr is obj.attr` is always true. But `f() is f()`
+            # is NOT: it asserts two separate calls return the SAME object, the
+            # canonical lru_cache / memoization / singleton identity test. Only
+            # flag an `is` self-compare when no call is involved.
+            if isinstance(op, ast.Is):
+                if any(isinstance(n, ast.Call) for n in ast.walk(test.left)):
+                    return False
+            return True
     return False
 
 
