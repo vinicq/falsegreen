@@ -84,6 +84,7 @@ CASES = {
     "C14": ("golden/snapshot generated from the output itself", "low", "J2"),
     "C16": ("result depends on time, randomness or a fixed sleep", "low", "J1"),
     "C17": ("skip inside a broad except hides a real failure", "high", "J1"),
+    "C18": ("compares str()/repr() of a value to a literal (checks formatting)", "low", "J2"),
     "C20": ("assertion in dead code after return/raise/fail (never runs)", "high", "J1"),
     "C21": ("every assertion is conditional, none runs unconditionally", "low", "J1"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
@@ -422,6 +423,34 @@ def assert_exact_float(test):
     return False
 
 
+def _is_string_literal(node):
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str)
+    return node.__class__.__name__ in ("Str",)
+
+
+def _is_stringify(node):
+    """A str()/repr()/format() call or an f-string: turning a value into text."""
+    if isinstance(node, ast.JoinedStr):  # an f-string
+        return True
+    if isinstance(node, ast.Call):
+        return dotted_name(node.func).split(".")[-1] in ("str", "repr", "format")
+    return False
+
+
+def assert_sensitive_equality(test):
+    """assert str(x) == "..." / repr(x) == "..." / f"{x}" == "..." checks the
+    formatting of x, not its value. A repr change breaks the test with no real
+    defect, and a value bug can hide behind matching text. (Sensitive Equality)."""
+    if isinstance(test, ast.Compare) and len(test.comparators) == 1 \
+            and isinstance(test.ops[0], ast.Eq):
+        left, right = test.left, test.comparators[0]
+        if (_is_stringify(left) and _is_string_literal(right)) \
+                or (_is_stringify(right) and _is_string_literal(left)):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Findings
 # ---------------------------------------------------------------------------
@@ -702,6 +731,8 @@ def analyze_function(func, file, findings, in_class=False):
             else:
                 if assert_exact_float(test):
                     findings.append(Finding(file, n.lineno, "C8"))
+                if assert_sensitive_equality(test):
+                    findings.append(Finding(file, n.lineno, "C18"))
                 weak = assert_weak(test)
                 if weak:
                     findings.append(Finding(file, n.lineno, "C6", weak))
