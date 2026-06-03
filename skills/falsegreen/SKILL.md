@@ -28,8 +28,22 @@ works in two layers.
    asserts the *right* value. This catches the worst case, a test that passes
    while locking in a bug.
 
-The catalog of patterns lives in `reference.md` (18 cases, A-E). The
-plain-language guide is in `../../docs/guide.md`.
+The catalog of patterns lives in `reference.md` (cases A-E plus the semantic smell
+index). The plain-language guide is in `../../docs/guide.md`.
+
+### What this skill judges, and what it does not
+
+A **test smell** is a symptom of a design or maintainability problem in test code
+(Soares 2023, *A Multimethod Study of Test Smells*). Most smells do not make a test
+lie: an Eager Test or a badly named test still goes red when the code breaks. This
+skill targets the narrower, more dangerous set: tests that are smelly **and
+ineffective**, where the green bar is false. The sharpest case is the **rotten
+green test** (Soares's term; Delplanque, Ducasse et al., ICSE 2019): a passing test
+that holds at least one assertion that never executes. Test effectiveness (does it
+fail when the code is wrong?) is the property to protect, judged against the test's
+intent and an independent oracle, not against the code's current output. In AAA
+terms, every defect here lives in the Assert phase: either the assertion does not
+run (rotten green), or it runs against the wrong oracle.
 
 ---
 
@@ -131,37 +145,86 @@ When you cannot tell the intent, say so and ask rather than guess.
 Work test by test. Prioritize tests touched in the current diff, then scanner
 flags, then the rest.
 
-1. **Find the unit under test.** Read the production function. Derive its
+1. **Infer the layer and stack first.** Before judging anything, read the test and
+   the code it touches and decide what you are looking at, because the smell idioms
+   change with the layer. Two axes: the **layer** (pure logic vs web/API vs
+   browser/UI) and the **stack** (Python/pytest vs JS/TS frontend: Jest, Vitest,
+   React Testing Library, Playwright, Cypress). The bundled scanner is Python-only;
+   JS/TS is yours alone (reference.md, "Frontend cues by language"). State the layer
+   in one line, then apply each judgment with that layer's idioms (reference.md,
+   "Layer-aware adjustments"). When a unit test quietly hits the network or the DOM,
+   treat the hidden layer as the real one and say so.
+2. **Find the unit under test.** Read the production function. Derive its
    intended behavior from the oracle hierarchy above. Write down, in one line,
    what the correct output should be for the inputs the test uses.
-2. **Read what the test actually asserts.** Not what its name promises, what the
+3. **Read what the test actually asserts.** Not what its name promises, what the
    assertions check. A test named `test_rejects_negative` that never asserts a
    rejection is lying about its purpose.
-3. **Compare expected against intended.** Outcomes: matches intent -> sound;
+4. **Compare expected against intended.** Outcomes: matches intent -> sound;
    contradicts intent while passing -> the code has a bug the test froze (case
    18), report the code bug first; expected computed by repeating the production
    logic (case 12) -> flag and propose a concrete hand-written expected value.
-4. **Confirm the test can fail.** Ask: "is there a way for the code to be wrong
+   Run the six judgments below; the oracle hierarchy settles J1 and J2, your
+   reading settles J3-J6.
+5. **Confirm the test can fail.** Ask: "is there a way for the code to be wrong
    and this test to stay green?" If yes, it does not protect what it claims.
    Mutation testing (`mutmut`, `cosmic-ray`) is the automated version; recommend
    it for suites that matter.
-5. **Judge value.** A test adds value only if it would go red for a real defect
+6. **Judge value.** A test adds value only if it would go red for a real defect
    in the behavior it covers. Tests that restate the implementation, assert on
    mocks you configured, or duplicate coverage are noise.
 
-### What to look for that the scanner misses
+### The six judgments (the semantic pass in full)
 
-- Mocking the unit under test instead of its dependencies (case 10), then
-  asserting the value you fed the mock (case 11). Only you can tell whether a
-  mock replaced an edge (network, disk, clock) or the thing being tested.
-- An integration test that mocks the integration it exists to prove.
-- `unittest.TestCase` assertions (`self.assertEqual`, `self.assertTrue("msg")`,
-  `self.assertRaises(Exception)`). The scanner is pytest-`assert`-focused and is
-  weak on the xUnit dialect; read those by hand.
-- Assertions so tightly coupled to implementation details (call order, private
-  attributes) that a safe refactor turns them red for no real defect. That false
-  alarm erodes trust the same way a false positive does.
-- Expected values that are magic numbers with no traceable origin.
+The scanner proves structure. Every false positive a parser cannot see reduces to
+one of six questions about a test. Ask all six, in order, for each test. Each has a
+detection cue and the oracle to settle it. The full catalog of smells under each
+judgment, marked scanner-owned vs semantic, is in `reference.md` ("Semantic smell
+index"). Consult it when a test resists a quick verdict.
+
+**J1. Does the assertion actually run?** A green test whose assertion never
+executes protects nothing (the rotten-green family). Cue: assertions only inside an
+`if`/`for`, after an early `return`/`raise`, inside an un-awaited coroutine or a
+callback the test never forces, or only in one branch of a conditional. Scanner
+catches the plain cases (C1, C20, C21); you own the async-never-awaited one. Trace
+the control flow: is there an input on this test's path where zero assertions fire?
+
+**J2. Is the oracle independent of the code?** The expected value must come from
+spec, contract, or human judgment, never read off current output (case 18) and
+never recomputed by repeating the production formula (case 12). Cue: a magic-number
+expected with no origin; an expected built by calling the same helper the SUT uses;
+a snapshot written from today's output. Settle by the oracle hierarchy.
+
+**J3. Does the test exercise the real unit, or a stand-in?** Mocking the unit under
+test (case 10) and then asserting the value you fed the mock (case 11) verifies the
+setup, not the program. Cue: the SUT itself is patched; an integration test mocks
+the integration it exists to prove; every dependency mocked and none verified. Did
+the mock replace an edge (network, disk, clock) or the thing being tested?
+
+**J4. Does it check enough, and the right thing?** A real assertion against a real
+result can still be vacuous. Cue: truthiness only (C6); tests MIN+1 and MIN-1 but
+never the boundary MIN itself; a name that promises a check the body never makes;
+a web response asserted only by status with the body unverified. Name one real
+defect that would still pass this test; if you can, the assertion is too weak.
+Never resolve this by weakening; add the missing assertion.
+
+**J5. Is it coupled to internals it should not see?** A test bound to private
+fields, internal call order, or patched private methods goes red on a safe refactor
+with no real defect, and it is what makes tautological mocks possible. Cue: access
+to private/underscore attributes, asserting call sequence, patching an internal
+method of the SUT. Would a behavior-preserving refactor break this test?
+
+**J6. Does it pass in isolation, or only via shared state?** A test green in the
+suite but red alone protects nothing on its own; the green came from a sibling's
+leftover state. Cue: it reads state it never writes (a module-global, a singleton,
+a DB/file row a prior test set up), or it must run in a fixed order. Would it pass
+run first, alone, with a fresh process and clean fixtures? If you cannot tell from
+the code, recommend the runtime check (`pytest -p no:randomly`, or run it isolated).
+
+Two cross-cutting reminders the parser is weak on: read `unittest.TestCase`
+assertions (`self.assertEqual`, `self.assertRaises(Exception)`) by hand, the scanner
+is pytest-`assert`-focused; and a `test_*` whose name promises a behavior the body
+never asserts is lying regardless of which judgment catches it.
 
 ---
 
