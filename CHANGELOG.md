@@ -6,20 +6,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-- C18 (LOW): assertion comparing `str()`/`repr()`/an f-string of a value to a
-  string literal, which checks formatting instead of the value (Sensitive Equality).
-- C19 (LOW): a `pytest.raises` block wrapping more than one statement, where an
-  earlier line can raise and the intended call is never reached.
-
-### Fixed
-- C7 no longer flags `f() is f()` (the lru_cache / singleton identity test); only
-  a no-call `is` self-compare is always true.
-
-### Changed
-- C8 exempts `== 0.0` and `== 1.0` (exact all/none ratio sentinels); fractional
-  floats like `0.1` still fire.
-
 ## [0.1.0] - 2026-06-03
 
 First release.
@@ -28,7 +14,13 @@ First release.
 - Deterministic AST scanner for Python/pytest (`falsegreen`, `python -m falsegreen`)
   covering false-positive patterns across the semantic-logic families. HIGH codes
   block a commit; LOW codes warn. Codes: C1 C2 C2b C3 C4 C4b C5 C6 C7 C8 C9 C13
-  C13b C14 C16 C17 C20 C21 CC. Each code carries a judgment tag (J1-J6).
+  C13b C14 C16 C17 C18 C19 C20 C21 CC. Each code carries a judgment tag (J1-J6).
+- C18 (LOW): assertion comparing `str()`/`repr()`/an f-string of a value to a
+  string literal, which checks formatting instead of the value (Sensitive Equality).
+- C19 (LOW): a `pytest.raises` block wrapping more than one statement, where an
+  earlier line can raise and the intended call is never reached.
+- PyPI publishing via Trusted Publishing (OIDC) in `.github/workflows/release.yml`;
+  see `RELEASE.md`.
 - Inline suppression (`# falsegreen: ignore[C8]`) and `--disable` flag.
 - Project config: `[tool.falsegreen]` in `pyproject.toml` or `.falsegreen.toml`
   (`disable`, `exclude`, per-code `severity`); precedence CLI > inline > config.
