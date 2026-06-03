@@ -312,7 +312,20 @@ then the built-in default. Point at a specific file with `--config PATH`. The
 config reader uses the standard library on Python 3.11+ and `tomli` on older
 versions; on 3.8 without `tomli` it is a silent no-op.
 
-(Baseline/ratchet mode for legacy repos is on the roadmap.)
+### Baseline (adopt on a legacy repo without blocking day one)
+
+Record the findings you already have, then fail only on new ones:
+
+```bash
+falsegreen --write-baseline tests/   # writes .falsegreen-baseline.json, exits 0
+falsegreen --baseline tests/         # suppresses the recorded findings, fails on new
+```
+
+A finding is fingerprinted by its relative path, code, detail, and the
+normalized source line, not by line number, so prepending or moving code does not
+re-trigger a baselined finding. Commit `.falsegreen-baseline.json` and the ratchet
+only tightens. Both flags default to `.falsegreen-baseline.json`; pass a path to
+override.
 
 ---
 

@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from falsegreen.scanner import (
     run, analyze_file, main, load_config, effective_conf,
     render_sarif, render_junit, summary_line,
+    fingerprint, load_baseline,
 )
 
 
@@ -474,3 +475,56 @@ def test_summary_line_counts(tmp_path):
     line = summary_line(findings, n_files=1)
     assert "1 high, 1 low" in line
     assert "scanned 1 test file(s)" in line
+
+
+# --- FG-BASELINE-1: ratchet mode, content fingerprints ---------------------
+
+def test_write_baseline_records_all_and_exits_zero(tmp_path):
+    f = _write(tmp_path / "test_h.py", "def test_x():\n    assert True\n")
+    bl = tmp_path / "base.json"
+    assert main([f, "--write-baseline", str(bl)]) == 0
+    fps = load_baseline(str(bl))
+    assert len(fps) == 1  # the C5 finding
+
+
+def test_baseline_suppresses_known_and_keeps_clean_exit(tmp_path):
+    f = _write(tmp_path / "test_h.py", "def test_x():\n    assert True\n")
+    bl = str(tmp_path / "base.json")
+    main([f, "--write-baseline", bl])
+    # with the finding baselined, the only finding is suppressed -> exit 0
+    assert main([f, "--baseline", bl]) == 0
+    assert run([f], baseline=load_baseline(bl)) == []
+
+
+def test_baseline_still_fails_on_a_new_finding(tmp_path):
+    f = _write(tmp_path / "test_h.py", "def test_x():\n    assert True\n")
+    bl = str(tmp_path / "base.json")
+    main([f, "--write-baseline", bl])
+    # add a NEW high finding; it is not in the baseline, so the scan fails
+    _write(tmp_path / "test_h.py",
+           "def test_x():\n    assert True\ndef test_y():\n    assert (1, 'm')\n")
+    assert main([f, "--baseline", bl]) == 20
+
+
+def test_fingerprint_survives_prepended_blank_lines(tmp_path):
+    # the key regression: a finding shifted down by unrelated edits stays suppressed
+    f = _write(tmp_path / "test_h.py", "def test_x():\n    assert True\n")
+    bl = str(tmp_path / "base.json")
+    main([f, "--write-baseline", bl])
+    base_fps = load_baseline(bl)
+    # prepend blank lines + a comment: the assert moves from line 2 to line 5
+    _write(tmp_path / "test_h.py",
+           "\n\n# unrelated\ndef test_x():\n    assert True\n")
+    after = run([f])
+    assert len(after) == 1
+    assert after[0].line == 5                       # line moved
+    assert fingerprint(after[0]) in base_fps        # fingerprint did not
+    assert run([f], baseline=base_fps) == []        # still suppressed
+
+
+def test_fingerprint_differs_by_code_and_snippet(tmp_path):
+    f1 = _write(tmp_path / "test_a.py", "def test_x():\n    assert True\n")
+    f2 = _write(tmp_path / "test_b.py", "def test_y():\n    assert f(d) == f(d)\n")
+    a = run([f1])[0]
+    b = run([f2])[0]
+    assert fingerprint(a) != fingerprint(b)  # different file/code/snippet

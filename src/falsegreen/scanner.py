@@ -32,6 +32,7 @@ Usage:
 import argparse
 import ast
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -391,7 +392,7 @@ def assert_exact_float(test):
 # Findings
 # ---------------------------------------------------------------------------
 class Finding:
-    __slots__ = ("file", "line", "code", "detail", "conf")
+    __slots__ = ("file", "line", "code", "detail", "conf", "snippet")
 
     def __init__(self, file, line, code, detail=""):
         self.file = file
@@ -399,6 +400,7 @@ class Finding:
         self.code = code
         self.detail = detail
         self.conf = CASES[code][1]  # effective confidence; run() may override it
+        self.snippet = ""           # normalized source at the finding; set in analyze_file
 
     def dict(self):
         title = CASES[self.code][0]
@@ -737,11 +739,14 @@ def analyze_file(file):
             findings.append(Finding(file, i, "CC"))
 
     ignores = parse_inline_ignores(source)
+    src_lines = source.splitlines()
     kept = []
     for f in findings:
         spec = ignores.get(f.line)
         if spec and ("*" in spec or f.code in spec):
             continue
+        if 1 <= f.line <= len(src_lines):
+            f.snippet = " ".join(src_lines[f.line - 1].split())
         kept.append(f)
     return kept
 
@@ -879,7 +884,47 @@ def summary_line(findings, n_files):
     return line + ("  " + breakdown if breakdown else "")
 
 
-def run(paths, staged=False, disable=None, config=None, config_path=None, stats=None):
+# ---------------------------------------------------------------------------
+# Baseline (ratchet): fingerprint by content, not line number
+# ---------------------------------------------------------------------------
+def fingerprint(finding):
+    """Stable id: sha1(relpath, code, detail, normalized snippet)[:16]. No line
+    number, so the fingerprint survives unrelated line shifts in the file."""
+    key = "\0".join([
+        _rel_uri(finding.file), finding.code,
+        finding.detail or "", finding.snippet or "",
+    ])
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
+
+def load_baseline(path):
+    """Read a baseline file into a set of fingerprints (empty set if unreadable)."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return set()
+    return {item["fingerprint"] for item in data.get("findings", [])
+            if isinstance(item, dict) and item.get("fingerprint")}
+
+
+def write_baseline(path, findings):
+    """Write all current findings as a baseline. Returns how many were recorded."""
+    items = [{
+        "fingerprint": fingerprint(a),
+        "code": a.code,
+        "file": _rel_uri(a.file),
+        "detail": a.detail,
+    } for a in sorted(findings, key=lambda x: (x.file, x.line))]
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"version": 1, "tool": "falsegreen", "findings": items},
+                  fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    return len(items)
+
+
+def run(paths, staged=False, disable=None, config=None, config_path=None,
+        stats=None, baseline=None):
     cli_disable = set(disable or [])
     if config is None:
         config = load_config(explicit=config_path)
@@ -906,6 +951,8 @@ def run(paths, staged=False, disable=None, config=None, config_path=None, stats=
                 continue
             seen.add(key)
             findings.append(a)
+    if baseline:
+        findings = [a for a in findings if fingerprint(a) not in baseline]
     return findings
 
 
@@ -924,12 +971,29 @@ def main(argv=None):
     ap.add_argument("--disable", default="", help="comma-separated case codes to skip (e.g. C6,C2b)")
     ap.add_argument("--config", default=None,
                     help="path to a .falsegreen.toml or pyproject.toml (default: auto-discover in cwd)")
+    ap.add_argument("--baseline", nargs="?", const=".falsegreen-baseline.json", default=None,
+                    metavar="PATH",
+                    help="suppress findings recorded in PATH (default .falsegreen-baseline.json); "
+                         "fail only on findings not in the baseline")
+    ap.add_argument("--write-baseline", nargs="?", const=".falsegreen-baseline.json", default=None,
+                    metavar="PATH",
+                    help="record all current findings to PATH as a baseline, then exit 0")
     args = ap.parse_args(argv)
 
     disable = {c.strip() for c in args.disable.split(",") if c.strip()}
     stats = {}
+
+    if args.write_baseline is not None:
+        findings = run(args.paths, staged=args.staged, disable=disable,
+                       config_path=args.config, stats=stats)
+        n = write_baseline(args.write_baseline, findings)
+        sys.stderr.write("falsegreen: wrote %d fingerprint(s) to %s\n"
+                         % (n, args.write_baseline))
+        return 0
+
+    baseline = load_baseline(args.baseline) if args.baseline else None
     findings = run(args.paths, staged=args.staged, disable=disable,
-                   config_path=args.config, stats=stats)
+                   config_path=args.config, stats=stats, baseline=baseline)
 
     fmt = "json" if args.json else args.format
     renderers = {"text": render_text, "json": render_json,
