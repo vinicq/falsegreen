@@ -124,6 +124,23 @@ def test_flags_float_equality(tmp_path):
     """)
 
 
+def test_exact_zero_and_one_floats_are_not_c8(tmp_path):
+    # 0.0 and 1.0 are exact all/none ratio sentinels, not the rounding smell
+    codes = scan_source(tmp_path, """
+        def test_x():
+            assert ratio() == 1.0
+            assert ratio() == 0.0
+    """)
+    assert "C8" not in codes
+
+
+def test_fractional_float_is_still_c8(tmp_path):
+    assert "C8" in scan_source(tmp_path, """
+        def test_x():
+            assert ratio() == 0.1
+    """)
+
+
 # --- regressions: it must NOT flag legitimate code (review counter-examples) -
 
 def test_clean_test_has_no_findings(tmp_path):
