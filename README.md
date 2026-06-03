@@ -6,17 +6,29 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **Unit-test quality, focused on one failure: the false positive.** falsegreen
-finds tests that stay green without protecting anything, and tests that pass while
-asserting the wrong expected value.
+finds Python/pytest tests that pass green without protecting anything, and tests
+that pass while asserting the wrong value.
 
-A green test that never fails when the code breaks is worse than no test. It tells
-you a broken program is safe. AI coding assistants produce these in volume: tests
-that assert nothing, mock the very function they claim to test, re-implement the
-production formula, or copy the expected value straight from current (possibly
-buggy) output. falsegreen is built to catch exactly that.
+A green test that never fails when the code breaks is worse than no test: it tells
+you a broken program is safe. AI coding assistants produce these in volume. The
+tool catches them in two layers.
 
-> Status: pre-release (v0.1.0). The `pip install`, `pre-commit`, and
-> `/plugin marketplace add` paths below go live with the first tagged release.
+The scanner is a zero-dependency AST pass that runs on every commit. It validates
+each test against more than twenty mechanical smells, the ones a parser can prove:
+an assertion that never runs, a check that is empty or always true, a swallowed
+exception, a mock of the unit under test, an assertion stranded in dead code, a
+weak truthiness check, an async test that never awaits. High-confidence findings
+block the commit; the rest warn. The Claude Code skill then does the part a parser
+cannot: it reads the production code and judges whether each test asserts the
+*right* value, measured against the intended behavior rather than the current
+(possibly buggy) output.
+
+The checks are grounded in the rotten-green-test research (Soares 2023; Delplanque
+et al., ICSE 2019) and cross-walked against the published test-smell catalog. See
+[CREDITS.md](CREDITS.md).
+
+> Live on PyPI: `pip install falsegreen`. Also a pre-commit hook and a Claude Code
+> plugin (see the three install paths below).
 
 ---
 
