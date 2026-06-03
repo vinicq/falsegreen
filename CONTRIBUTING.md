@@ -63,6 +63,17 @@ Then run `pytest`, `python -m falsegreen src tests` (must stay clean), and
 `diff src/falsegreen/scanner.py skills/falsegreen/scripts/scan.py` (must be
 identical, copy the file if you changed the scanner).
 
+### Off-by-default codes
+
+Some rules are real but too noisy to run on every project, so they ship disabled.
+A code is off by default when its confidence in `CASES` is `"off"` (for example
+`C22`, the async-never-awaits check). The resolver already returns the catalog
+default, so an `"off"` code stays quiet until a user opts in with
+`[tool.falsegreen] severity = { C22 = "low" }`. Use this when a rule has a genuine
+false-positive risk on common patterns: ship it `"off"`, document why, and let
+teams turn it on. Its tests must run it through `--config`/`severity` to enable it,
+since `run()` filters off-by-default codes (and the `analyze_file` path does not).
+
 ### The false-positive policy
 
 falsegreen blocks commits, so precision beats recall. A rule that wrongly blocks
