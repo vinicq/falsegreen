@@ -245,6 +245,58 @@ def test_layer_in_json_and_sarif(tmp_path):
     assert "layer:web" in doc["runs"][0]["results"][0]["properties"]["tags"]
 
 
+# --- #14 off-by-default infra + #13 C22 async never-awaits (The Liar) --------
+
+_C22_BAD = """
+    async def test_x():
+        result = fetch()
+        assert result == 1
+"""
+
+
+def test_c22_is_off_by_default(tmp_path):
+    # the async-liar code does not fire unless explicitly enabled (run() filters
+    # off-by-default codes via effective_conf; analyze_file alone does not)
+    f = _write(tmp_path / "test_x.py", textwrap.dedent(_C22_BAD))
+    assert "C22" not in {a.code for a in run([f])}
+
+
+def test_c22_fires_when_enabled_via_config(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nC22 = "low"\n')
+    f = _write(tmp_path / "test_x.py", textwrap.dedent(_C22_BAD))
+    codes = {a.code for a in run([f], config_path=cfg)}
+    assert "C22" in codes
+
+
+def test_c22_clean_when_it_awaits(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nC22 = "low"\n')
+    f = _write(tmp_path / "test_x.py", textwrap.dedent("""
+        async def test_x():
+            result = await fetch()
+            assert result == 1
+    """))
+    assert "C22" not in {a.code for a in run([f], config_path=cfg)}
+
+
+def test_c22_clean_for_sync_test(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nC22 = "low"\n')
+    f = _write(tmp_path / "test_x.py", textwrap.dedent("""
+        def test_x():
+            assert fetch() == 1
+    """))
+    assert "C22" not in {a.code for a in run([f], config_path=cfg)}
+
+
+def test_c22_clean_when_it_drives_the_loop(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nC22 = "low"\n')
+    f = _write(tmp_path / "test_x.py", textwrap.dedent("""
+        async def test_x():
+            results = asyncio.run(gather())
+            assert results == [1, 2]
+    """))
+    assert "C22" not in {a.code for a in run([f], config_path=cfg)}
+
+
 # --- regressions: it must NOT flag legitimate code (review counter-examples) -
 
 def test_clean_test_has_no_findings(tmp_path):
@@ -756,7 +808,7 @@ def test_every_case_has_a_known_judgment(tmp_path):
     from falsegreen.scanner import CASES, JUDGMENTS
     entries = list(CASES.values())
     assert all(len(e) == 3 for e in entries)            # (title, confidence, judgment)
-    assert all(e[1] in ("high", "low") for e in entries)
+    assert all(e[1] in ("high", "low", "off") for e in entries)
     assert all(e[2] in JUDGMENTS for e in entries)
 
 
