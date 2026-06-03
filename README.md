@@ -111,20 +111,28 @@ classification step keeps the tool from flagging legitimate styles.
 
 The plain-language guide behind every case, with a real-world analogy and a
 before/after for each, is in [`docs/guide.md`](docs/guide.md). The detection
-reference that maps each case to its scanner code and to established tooling is in
-[`skills/falsegreen/reference.md`](skills/falsegreen/reference.md). The approach
-draws on the established test-smell literature (testsmells.org, PyNose, the
-Contributor Covenant of test quality) and on mutation testing as the honest
-measure of a suite.
+reference that maps each code to its scanner code and to established tooling is in
+[`skills/falsegreen/reference.md`](skills/falsegreen/reference.md).
+
+The basis is the rotten-green-test research: a passing test that holds an
+assertion which never runs (Elvys Soares, *A Multimethod Study of Test Smells*,
+2023; Delplanque et al., *Rotten Green Tests*, ICSE 2019). The catalog of patterns
+is cross-walked against the published test-smell catalog and against PyNose, the
+Python test-smell detector. Mutation testing (`mutmut`, `cosmic-ray`) is the honest
+measure of whether a suite actually fails when the code is wrong. Every reference,
+and the specific thing falsegreen took from each one, is in [CREDITS.md](CREDITS.md).
 
 ---
 
 ## What it validates, how, and why
 
-18 cases across the five families. A case is caught either by the deterministic
-**scanner** (a code like `C5`) or only by the **semantic** pass (it needs to read
-the production code). HIGH-confidence scanner findings block a commit; LOW ones
-warn.
+The catalog has 18 named cases across the five families, and the scanner now ships
+21 codes (the five families are the scanner-facing view; the semantic pass asks the
+same questions as six judgments, J1 to J6, which is the LLM-facing view of the same
+thing, mapped code by code in [`reference.md`](skills/falsegreen/reference.md)). A
+case is caught either by the deterministic **scanner** (a code like `C5`) or only
+by the **semantic** pass (it needs to read the production code). HIGH-confidence
+scanner findings block a commit; LOW ones warn.
 
 | # | Case | Why it fools you | Detected by | Conf |
 |---|---|---|---|---|
@@ -146,6 +154,16 @@ warn.
 | 16 | Depends on time, randomness, or a sleep | passes or fails by luck | `C16` | LOW |
 | 17 | `skip` inside a broad `except` | turns red into yellow, hides the defect | `C17` | HIGH |
 | 18 | Expected value contradicts what the code should do | freezes a bug as "correct" | semantic | - |
+
+Five codes added after the original eighteen, each in an existing family:
+
+| Code | Pattern | Why it fools you | Family | Conf |
+|---|---|---|---|---|
+| `C18` | Compares `str()`/`repr()`/an f-string to a literal | checks formatting, not the value | B | LOW |
+| `C19` | `pytest.raises` block wraps more than one call | an earlier line raises, the target is never reached | A | LOW |
+| `C20` | `assert` in dead code after `return`/`raise`/`fail()` | the check never runs | A | HIGH |
+| `C21` | Every `assert` is conditional, none runs unconditionally | a false condition passes the whole test | A | LOW |
+| `C22` | `async` test asserts but never awaits the unit | the assertion checks an un-awaited coroutine | A | off by default |
 
 (`CC`, a commented-out `assert`, is also flagged LOW.)
 
@@ -177,17 +195,53 @@ not verdicts.
 
 ---
 
+## What falsegreen takes from the research, and what it leaves out
+
+The detection logic is a deliberate subset of the test-smell literature, not a copy
+of it. falsegreen keeps the smells that make a passing test ineffective and drops
+the rest on purpose. The specific debt to each work, with citations, is in
+[CREDITS.md](CREDITS.md); the short version:
+
+- From the **rotten-green-test work** (Soares 2023; Delplanque et al., 2019): the
+  core definition (a passing test with an assertion that never runs) and the rules
+  that follow from it, `C1`, `C20`, `C21`, plus the AAA Assert framing.
+- From the **test-smell catalog**: the semantic-logic slice, reorganized as the six
+  judgments. The other seven categories (naming, size, duplication, performance,
+  manual tests) stay out.
+- From **PyNose**: the confirmation that the `unittest`/xUnit dialect is a real gap
+  worth covering. PyNose's maintainability smells (Assertion Roulette, Redundant
+  Print, Lack of Cohesion, Test Maverick) stay out.
+- From the **LLM studies** (Agentic LMs, SBES 2025; Santana Jr. et al., 2025): the
+  method, an LLM agent that detects and proposes fixes, validated by a
+  coverage-and-mutation check. Santana Jr. et al. found standalone LLM refactoring
+  drops coverage and recommend exactly that validating agent, which is why the
+  AI-fix path here is gated, not trusted.
+
+Why leave the rest out: a cloned test, a badly named test, an Eager Test, an
+Assertion Roulette still goes red when the code is wrong. They cost maintainability,
+not protection. Flagging them as false positives would itself be a false positive,
+and precision over recall is the whole point. `ruff`'s `PT` rules and PyNose cover
+that maintainability layer well; run them alongside falsegreen.
+
+---
+
 ## The two layers
 
 | Layer | What it is | When it runs | Catches |
 |---|---|---|---|
-| **Scanner** | Zero-dependency AST analysis (Python/pytest), one self-contained module | CLI, CI, pre-commit | the mechanical patterns (16 codes) |
+| **Scanner** | Zero-dependency AST analysis (Python/pytest), one self-contained module | CLI, CI, pre-commit | the mechanical patterns (21 codes) |
 | **Semantic pass** | A Claude Code skill (`/falsegreen`) that reads the code | on demand, in Claude Code | the bug-freezing patterns no static tool can see (cases 10/11/12/15/18) |
 
 The scanner is the fast, deterministic pre-filter. It overlaps in part with
 `ruff`'s `PT` rules and with research tools like PyNose, and that overlap is fine:
 run them together. The semantic pass is the part nobody else ships, and it is the
 reason the project exists.
+
+The semantic pass runs on whatever Claude model your Claude Code session uses. It
+is not pinned to one model, and it does not need a frontier one: the research it
+draws on (Agentic LMs, SBES 2025; Santana Jr. et al., 2025) shows that small,
+locally-runnable models detect and refactor these patterns well. The value is in
+the protocol, not in any single model.
 
 ---
 
