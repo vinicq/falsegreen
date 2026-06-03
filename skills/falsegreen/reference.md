@@ -50,6 +50,13 @@ Notes.
 Notes.
 - **C5**: the famous `assert (x == y, "msg")` bug, a non-empty tuple, is always
   truthy and silently passes. The scanner flags any non-empty tuple assertion.
+- **C6**: a bare truthiness check (`assert result`, `assert obj.attr`) or a
+  not-empty proxy (`len(x) > 0`, loose `"x" in y`). A *called* boolean predicate is
+  NOT weak and is exempt: `assert isinstance(x, T)`, `assert path.exists()`,
+  `assert any(...)`, `assert obj.is_ready()`. The exemption is name-based (the AST
+  has no return types), so a predicate-named method that returns a non-bool slips
+  through; the semantic pass is the backstop. A bare `assert path.exists` (missing
+  parens, always truthy) stays flagged.
 - **C7**: detected when both sides are AST-identical. Calling the same function on
   both sides (`assert f(d) == f(d)`) is the disguised version.
 - **C9**: a `pytest.raises(Exception)` swallows the wrong error too, including a
