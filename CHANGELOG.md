@@ -9,6 +9,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - C18 (LOW): assertion comparing `str()`/`repr()`/an f-string of a value to a
   string literal, which checks formatting instead of the value (Sensitive Equality).
+- C19 (LOW): a `pytest.raises` block wrapping more than one statement, where an
+  earlier line can raise and the intended call is never reached.
 
 ### Fixed
 - C7 no longer flags `f() is f()` (the lru_cache / singleton identity test); only

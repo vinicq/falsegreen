@@ -64,6 +64,7 @@ Notes.
 | 8 | Exact equality on a float | `C8` | LOW | floating-point equality smell |
 | 9 | `pytest.raises` too broad (`Exception`/`BaseException`, or no `match`) | `C9` | LOW | ruff PT011 / PT010 |
 | 18 | Compares `str()`/`repr()`/f-string of a value to a literal | `C18` | LOW | Sensitive Equality (testsmells.org) |
+| 19 | `pytest.raises` block wraps more than one statement | `C19` | LOW | Expecting Exceptions Anywhere |
 
 Notes.
 - **C5**: the famous `assert (x == y, "msg")` bug, a non-empty tuple, is always
@@ -84,6 +85,10 @@ Notes.
   are the usual all/none ratio sentinels (0/N, N/N).
 - **C9**: a `pytest.raises(Exception)` swallows the wrong error too, including a
   `NameError` from a typo in the test. Pin the exact type and a `match`.
+- **C19**: a `with pytest.raises(...)` block that wraps more than one statement.
+  An earlier line can raise the expected error, so the call you meant to test is
+  never reached and the test still passes. Keep only the one call that should raise
+  inside the block; do the setup above it.
 - **C18**: `assert str(x) == "..."` / `repr(x) == "..."` / `f"{x}" == "..."` checks
   how `x` formats, not its value. A repr tweak breaks the test for no real defect,
   and a value bug can hide behind matching text. Assert the value, or a field, not
