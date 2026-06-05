@@ -212,8 +212,8 @@ different natures.
   two rule classes (C7 on deliberate `__eq__` tests, C4 on test-named route
   handlers and local callbacks). Both were fixed, each with a fires-on-bad and a
   stays-clean regression test, and a re-scan brought the HIGH count to 0 across all
-  8 projects. Every project it has been run on, what each run revealed, and the
-  decision that followed are logged in [VALIDATION.md](VALIDATION.md).
+  8 projects. Each false positive is recorded as it is fixed, with its regression
+  tests, in the commit history and the CHANGELOG.
 - **The semantic pass (LLM, any language).** Cross-language coverage runs through
   this pass, so its reliability is measured, not assumed. The validation is a
   benchmark corpus: tests planted with a known ground truth, a test that mocks the
