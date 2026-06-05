@@ -224,10 +224,11 @@ def _apply_exclude(files, globs):
 
 
 # ---------------------------------------------------------------------------
-# Layer detection: which layer does a test target? Metadata only, no behavior
-# change. A finding in pure-logic code is higher-signal than one in a web/UI
-# test, so surfacing the layer lets a team triage by it. Foundation for the
-# layer-aware async / web rules (see the roadmap).
+# Layer detection: which layer does a test target? Surfaced as metadata on every
+# finding (triage by layer), and used to SOFTEN two codes that misfire on web/UI
+# tests (C6, C14 - see issue #20). It only ever removes a finding; it never adds
+# one or raises confidence, so it trades false positives away without buying new
+# ones (precision over recall).
 # ---------------------------------------------------------------------------
 WEB_IMPORT_ROOTS = {
     "django", "flask", "fastapi", "starlette", "rest_framework",
@@ -251,6 +252,65 @@ def detect_file_layer(tree):
     if roots & WEB_IMPORT_ROOTS:
         return "web"
     return "logic"
+
+
+# Fixture/parameter and object names that mark a test as targeting a web client
+# or a browser. Used to refine the file layer per function: a single test that
+# takes a `client` or `page` fixture targets that layer even in a logic file.
+WEB_CTX_NAMES = {"client", "test_client", "async_client", "api_client",
+                 "live_server", "flask_client", "testapp", "webapp"}
+BROWSER_CTX_NAMES = {"page", "browser", "driver", "selenium", "live_browser"}
+# Element/locator visibility predicates (Playwright/Selenium) - genuine booleans.
+BROWSER_PRESENCE_METHODS = {"is_visible", "is_enabled", "is_checked",
+    "is_displayed", "is_selected", "is_clickable", "is_editable", "is_hidden"}
+HTTP_METHODS = {"get", "post", "put", "delete", "patch", "head", "options"}
+# Object roots whose truthiness IS a presence assertion at the web/UI layer.
+WEB_OPERAND_ROOTS = {"response", "resp", "page", "locator", "element", "client",
+                     "request", "soup", "widget"}
+
+
+def detect_test_context(func, file_layer):
+    """The layer a single test targets: start from the file layer, then add
+    `web`/`browser` from this function's fixture/parameter names and call shapes
+    (`client.get(...)`, `page.locator(...)`, `.is_visible()`). A set, because a
+    test can touch more than one. Used only to soften C6/C14 (issue #20)."""
+    ctx = {file_layer}
+    params = {a.arg for a in func.args.args}
+    params |= {a.arg for a in getattr(func.args, "kwonlyargs", []) or []}
+    params |= {a.arg for a in getattr(func.args, "posonlyargs", []) or []}
+    if params & BROWSER_CTX_NAMES:
+        ctx.add("browser")
+    if params & WEB_CTX_NAMES:
+        ctx.add("web")
+    for n in ast.walk(func):
+        if isinstance(n, ast.Call):
+            name = dotted_name(n.func)
+            root, last = name.split(".")[0], name.split(".")[-1]
+            if (root in BROWSER_CTX_NAMES or last in BROWSER_PRESENCE_METHODS
+                    or last == "locator"):
+                ctx.add("browser")
+            elif root in WEB_CTX_NAMES and last in HTTP_METHODS:
+                ctx.add("web")
+    return ctx
+
+
+def is_web_presence_operand(test):
+    """A truthy operand that is the real assertion at the web/UI layer: an
+    element visibility predicate (`locator.is_visible()`), an HTTP request
+    (`client.get(...)`), or an object rooted in a response/page/locator/element.
+    In web/browser context these are checks, not weak `something came back`."""
+    if isinstance(test, ast.Call):
+        name = dotted_name(test.func)
+        root, last = name.split(".")[0], name.split(".")[-1]
+        if last in BROWSER_PRESENCE_METHODS or last == "locator":
+            return True
+        if last in HTTP_METHODS and root in WEB_CTX_NAMES:
+            return True
+        return root in WEB_OPERAND_ROOTS
+    if isinstance(test, (ast.Name, ast.Attribute, ast.Subscript)):
+        parts = dotted_name(test).split(".")
+        return bool(parts) and parts[0] in WEB_OPERAND_ROOTS
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +567,12 @@ BOOL_PREDICATE_PREFIX = re.compile(
 )
 
 
-def assert_weak(test):
+def assert_weak(test, ctx=()):
+    # In a web/browser test, the truthiness of a locator/element/response IS the
+    # expected-result check (element is present, request succeeded), not a weak
+    # "something came back". Soften only there, only for that operand shape.
+    if ("web" in ctx or "browser" in ctx) and is_web_presence_operand(test):
+        return None
     # Truthiness of something: assert result / assert obj.attr / assert f()
     if isinstance(test, ast.Call):
         fname = dotted_name(test.func).split(".")[-1]
@@ -968,9 +1033,11 @@ def looks_like_forgotten_nested_test(func, scope):
     )
 
 
-def analyze_function(func, file, findings, in_class=False, skip_exempt=False):
+def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
+                     file_layer="logic"):
     line = func.lineno
     mock_names = gather_mock_names(func)
+    ctx = detect_test_context(func, file_layer)
 
     body_intentionally_empty = (has_property_test_decorator(func)
                                 or has_skip_decorator(func) or skip_exempt)
@@ -999,7 +1066,7 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False):
                     findings.append(Finding(file, n.lineno, "C8"))
                 if assert_sensitive_equality(test):
                     findings.append(Finding(file, n.lineno, "C18"))
-                weak = assert_weak(test)
+                weak = assert_weak(test, ctx)
                 if weak:
                     findings.append(Finding(file, n.lineno, "C6", weak))
 
@@ -1118,7 +1185,10 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False):
                 is_call_to(c, "write_text", "write_bytes", "write", "dump", "open")
                 for c in ast.walk(n) if isinstance(c, ast.Call)
             )
-            if checks_exists and writes:
+            # snapshot / visual-regression tests at the web/UI layer write a
+            # golden on first run by design, so the "if not exists: write" shape
+            # is the norm there, not a smell. Suppress C14 in web/browser ctx.
+            if checks_exists and writes and not ({"web", "browser"} & ctx):
                 findings.append(Finding(file, n.lineno, "C14"))
 
 
@@ -1222,6 +1292,7 @@ def analyze_file(file):
         return findings
 
     collected = is_pytest_test_file(file)
+    layer = detect_file_layer(tree)
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             # A top-level `test*` function is only a real (rotten-green) test if
@@ -1230,7 +1301,7 @@ def analyze_file(file):
             # tests/data/cases/*.py, or a plain helper module) is never run, so its
             # empty/weak body is not a false-green test.
             if node.name.startswith("test") and collected:
-                analyze_function(node, file, findings)
+                analyze_function(node, file, findings, file_layer=layer)
             elif is_pytest_test_file(file) and looks_like_loose_test(node) \
                     and not has_fixture_decorator(node) \
                     and not is_web_route_handler(node) \
@@ -1253,13 +1324,13 @@ def analyze_file(file):
                     if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         if m.name.startswith("test"):
                             analyze_function(m, file, findings, in_class=True,
-                                             skip_exempt=class_skipped)
+                                             skip_exempt=class_skipped,
+                                             file_layer=layer)
 
     for i, line in enumerate(source.splitlines(), start=1):
         if re.match(r"^\s*#\s*assert\b", line):
             findings.append(Finding(file, i, "CC"))
 
-    layer = detect_file_layer(tree)
     ignores = parse_inline_ignores(source)
     src_lines = source.splitlines()
     kept = []

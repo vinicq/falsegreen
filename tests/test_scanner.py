@@ -464,6 +464,79 @@ def test_layer_in_json_and_sarif(tmp_path):
     assert "layer:web" in doc["runs"][0]["results"][0]["properties"]["tags"]
 
 
+# --- #20: layer-aware softening of C6/C14 on web/UI tests --------------------
+
+def test_c6_softened_for_http_request_in_web_ctx(tmp_path):
+    # `assert client.get(...)` in a web test: the response presence is the check,
+    # not a weak truthiness. No C6.
+    codes = scan_source(tmp_path, """
+        import fastapi
+        def test_endpoint(client):
+            assert client.get("/health")
+    """)
+    assert "C6" not in codes
+
+
+def test_c6_softened_for_locator_visibility_in_browser_ctx(tmp_path):
+    codes = scan_source(tmp_path, """
+        from playwright.sync_api import Page
+        def test_ui(page):
+            assert page.locator("#ok").is_visible()
+    """)
+    assert "C6" not in codes
+
+
+def test_c6_still_fires_for_plain_truthiness_in_web_file(tmp_path):
+    # a non-web operand in a web file is still a weak truthiness check: softening
+    # is scoped to web presence operands, it does not blanket-exempt the layer.
+    codes = scan_source(tmp_path, """
+        import fastapi
+        def test_x():
+            assert some_value
+    """)
+    assert "C6" in codes
+
+
+def test_c6_still_fires_in_logic_layer(tmp_path):
+    codes = scan_source(tmp_path, """
+        def test_x():
+            assert get_response()
+    """)
+    assert "C6" in codes
+
+
+def test_c14_suppressed_in_browser_ctx(tmp_path):
+    codes = scan_source(tmp_path, """
+        from playwright.sync_api import Page
+        def test_snapshot(page):
+            if not snap.exists():
+                snap.write_bytes(page.screenshot())
+    """)
+    assert "C14" not in codes
+
+
+def test_c14_still_fires_in_logic_layer(tmp_path):
+    codes = scan_source(tmp_path, """
+        def test_golden():
+            if not golden.exists():
+                golden.write_text(render_output())
+    """)
+    assert "C14" in codes
+
+
+def test_layer_softening_does_not_touch_c7_or_c5(tmp_path):
+    # the guardrail: layer only softens C6/C14. Vacuity codes are language- and
+    # layer-agnostic and must still fire in a web file.
+    codes = scan_source(tmp_path, """
+        import fastapi
+        def test_x(client):
+            assert True
+            assert obj == obj
+    """)
+    assert "C5" in codes
+    assert "C7" in codes
+
+
 # --- #14 off-by-default infra + #13 C22 async never-awaits (The Liar) --------
 
 _C22_BAD = """
