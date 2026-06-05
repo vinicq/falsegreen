@@ -83,5 +83,6 @@ First release.
   false positives: C6 on called boolean predicates, C1 on literal-collection
   loops, and C7 on `f() is f()` (the lru_cache / singleton identity test).
 
-[Unreleased]: https://github.com/vinicq/falsegreen/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/vinicq/falsegreen/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/vinicq/falsegreen/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/vinicq/falsegreen/releases/tag/v0.1.0
