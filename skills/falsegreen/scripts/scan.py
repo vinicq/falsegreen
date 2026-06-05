@@ -368,13 +368,15 @@ def assert_self_compare(test):
                 return False
             if not identical:
                 return False
-            # `x is x` / `obj.attr is obj.attr` is always true. But `f() is f()`
-            # is NOT: it asserts two separate calls return the SAME object, the
-            # canonical lru_cache / memoization / singleton identity test. Only
-            # flag an `is` self-compare when no call is involved.
-            if isinstance(op, ast.Is):
-                if any(isinstance(n, ast.Call) for n in ast.walk(test.left)):
-                    return False
+            # `x is x` / `x == x` / `obj.attr == obj.attr` is always true. But a
+            # call on each side is NOT a tautology: two separate calls may return
+            # two distinct objects. `f() is f()` is the lru_cache / singleton
+            # identity test; `cls(1) == cls(1)` / `Color("red") == Color("red")`
+            # is the canonical __eq__ value-equality test (attrs, pydantic,
+            # dataclasses). With default identity __eq__ those would FAIL, so a
+            # green one is a real check. Only flag a self-compare with no call.
+            if any(isinstance(n, ast.Call) for n in ast.walk(test.left)):
+                return False
             return True
     return False
 
@@ -382,26 +384,39 @@ def assert_self_compare(test):
 def in_equality_semantics_test(func, self_cmp):
     """True if the enclosing test exercises the same operand's equality/hashing.
 
-    `assert x == x` is only a tautology in isolation. Beside `assert x != y`,
-    `assert not x == y` (y a DISTINCT object), or `assert x in {x}` (membership
-    in a literal that holds x) it is the reflexive half of a deliberate
-    __eq__/__hash__ test (the value equals itself AND behaves correctly against a
-    distinct value / in a set), not a bug. Real examples: aiohttp `assert resp1
-    == resp1; assert not resp1 == resp2`; starlette `assert ws == ws; assert ws
-    in {ws}`. The discriminating counterpart must involve a distinct peer (not a
-    constant like None) or a literal container holding x; a lone `assert x == x`,
-    or one merely next to `x != None` or `x in some_registry`, stays C7."""
+    `assert x == x` / `assert x is x` is only a tautology in isolation. Beside a
+    discriminating counterpart on the SAME operand it is the reflexive half of a
+    deliberate __eq__/__hash__/identity test, not a bug. A counterpart is:
+      - `x != peer` / `not (x == peer)` / `x is not peer`, where peer is a
+        distinct object (another variable, or a non-trivial literal like `"foo"`
+        - but NOT a sentinel like None/True/False/0/1, so `x != None` does not
+        count);
+      - membership in a literal holding x: `x in {x}` / `x in [x, ...]` (but not
+        `x in some_registry`);
+      - a companion `hash(x)` in the test, the __hash__ half of an eq/hash pair.
+    Real examples: aiohttp `assert resp1 == resp1; assert not resp1 == resp2`;
+    starlette `assert ws == ws; assert ws in {ws}`; scrapy `assert r.flags is
+    r.flags; assert r.flags is not original`; attrs `assert i == i; assert
+    hash(i) == hash(i)`; hypothesis `assert x == x; assert x != "foo"`. A lone
+    `assert x == x`, or one merely next to `x != None`, stays C7."""
     try:
         operand = ast.dump(self_cmp.left)
     except Exception:
         return False
 
-    # a distinct peer is another variable-like operand (a sibling object under
-    # test, e.g. resp2), NOT a constant - `x != None` does not make `x == x`
-    # an equality-semantics test.
+    # a distinct object is another variable-like operand (a sibling under test),
+    # or a non-trivial literal. Sentinels (None/bool/0/1/"") do NOT count - a
+    # `x != None` null-check is not an equality-semantics test.
     PEER = (ast.Name, ast.Attribute, ast.Subscript)
 
-    def _has_distinct_peer(parts):
+    def _trivial_const(node):
+        if not isinstance(node, ast.Constant):
+            return False
+        v = node.value
+        return v is None or isinstance(v, bool) or v == "" \
+            or (isinstance(v, (int, float)) and v in (0, 1))
+
+    def _has_distinct(parts):
         mentions = distinct = False
         for p in parts:
             try:
@@ -410,7 +425,8 @@ def in_equality_semantics_test(func, self_cmp):
                 continue
             if same:
                 mentions = True
-            elif isinstance(p, PEER):
+            elif isinstance(p, PEER) or (isinstance(p, ast.Constant)
+                                         and not _trivial_const(p)):
                 distinct = True
         return mentions and distinct
 
@@ -426,9 +442,10 @@ def in_equality_semantics_test(func, self_cmp):
 
     for n in ast.walk(func):
         if isinstance(n, ast.Compare) and n is not self_cmp:
-            # x != peer: a discriminating check against a distinct object.
-            if any(isinstance(o, ast.NotEq) for o in n.ops):
-                if _has_distinct_peer([n.left, *n.comparators]):
+            # x != peer / x is not peer: a discriminating check against a
+            # distinct object (inequality or non-identity).
+            if any(isinstance(o, (ast.NotEq, ast.IsNot)) for o in n.ops):
+                if _has_distinct([n.left, *n.comparators]):
                     return True
             # x in {x} / x in [x, ...]: membership in a literal holding x, which
             # exercises __eq__/__hash__. `x in some_registry` does NOT qualify.
@@ -447,8 +464,16 @@ def in_equality_semantics_test(func, self_cmp):
             if isinstance(inner, ast.Compare) and any(
                 isinstance(o, ast.Eq) for o in inner.ops
             ):
-                if _has_distinct_peer([inner.left, *inner.comparators]):
+                if _has_distinct([inner.left, *inner.comparators]):
                     return True
+        # hash(x) anywhere in the test: the __hash__ half of an eq/hash pair.
+        if isinstance(n, ast.Call) and dotted_name(n.func).split(".")[-1] == "hash":
+            for a in n.args:
+                try:
+                    if ast.dump(a) == operand:
+                        return True
+                except Exception:
+                    continue
     return False
 
 
@@ -638,6 +663,26 @@ def handler_broad(handler):
         return True
     name = dotted_name(handler.type)
     return name.endswith("Exception") or name.endswith("BaseException")
+
+
+def handler_catches_assertion(handler):
+    """True if this except would actually swallow an AssertionError. Only a bare
+    `except:`, `except Exception`, `except BaseException`, or `except
+    AssertionError` (or a tuple including one) catches it. A specific custom
+    handler whose name merely ends in "Exception" (e.g. `except TestingException`)
+    does NOT catch AssertionError, so an assert in its try is not silenced -
+    AssertionError propagates and still fails the test."""
+    t = handler.type
+    if t is None:
+        return True
+
+    def _catches(node):
+        last = dotted_name(node).split(".")[-1]
+        return last in ("Exception", "BaseException", "AssertionError")
+
+    if isinstance(t, ast.Tuple):
+        return any(_catches(e) for e in t.elts)
+    return _catches(t)
 
 
 def block_has_assertion(stmts):
@@ -923,11 +968,13 @@ def looks_like_forgotten_nested_test(func, scope):
     )
 
 
-def analyze_function(func, file, findings, in_class=False):
+def analyze_function(func, file, findings, in_class=False, skip_exempt=False):
     line = func.lineno
     mock_names = gather_mock_names(func)
 
-    if not has_assertion(func):
+    body_intentionally_empty = (has_property_test_decorator(func)
+                                or has_skip_decorator(func) or skip_exempt)
+    if not has_assertion(func) and not body_intentionally_empty:
         if empty_body(func):
             findings.append(Finding(file, line, "C2"))
         elif makes_any_call(func):
@@ -999,7 +1046,7 @@ def analyze_function(func, file, findings, in_class=False):
                 )
                 if skips and handler_broad(h):
                     findings.append(Finding(file, h.lineno, "C17"))
-                elif handler_swallows(h) and handler_broad(h) and body_has_check:
+                elif handler_swallows(h) and handler_catches_assertion(h) and body_has_check:
                     findings.append(Finding(file, h.lineno, "C3"))
 
     for n in children_no_nesting(func):
@@ -1097,6 +1144,49 @@ def looks_like_loose_test(func):
     return False
 
 
+def has_property_test_decorator(func):
+    """The test is a property/fuzz test driven by a framework that generates
+    inputs and runs the body many times: hypothesis `@given`, `@fuzz`, or a
+    `@hypothesis...` decorator. A body with no explicit assert is idiomatic
+    there - the implicit oracle is 'no exception over all generated inputs' - so
+    it is not an empty/checks-nothing test."""
+    for d in func.decorator_list:
+        target = d.func if isinstance(d, ast.Call) else d
+        name = dotted_name(target)
+        last = name.split(".")[-1]
+        if last in ("given", "fuzz") or "hypothesis" in name:
+            return True
+    return False
+
+
+SKIP_MARKERS = {"skip", "skipif", "skipIf", "skipUnless", "skipTest", "xfail"}
+
+
+def has_skip_decorator(func):
+    """The test is decorated to skip or expect-failure: `@pytest.mark.skip`,
+    `@skipif`, `@unittest.skipUnless`, `@pytest.mark.xfail`, etc. An empty body
+    under such a marker is a deliberate placeholder ("not implemented yet" /
+    "known-broken"), not a rotten-green test, because the marker stops it from
+    running and passing silently."""
+    for d in func.decorator_list:
+        target = d.func if isinstance(d, ast.Call) else d
+        if dotted_name(target).split(".")[-1] in SKIP_MARKERS:
+            return True
+    return False
+
+
+def is_pytest_test_file(file):
+    """A file pytest collects by default: test_*.py, *_test.py, or conftest.py.
+    A loose, non-`test_`-named function only counts as a forgotten test when it
+    lives in a collected file. In a helper/fixtures/example module (e.g.
+    `_concurrency_fixtures.py`, a perf `command.py`) such a function is never a
+    test pytest would have run, so it is not 'forgotten'."""
+    base = os.path.basename(file)
+    return (base == "conftest.py"
+            or (base.startswith("test_") and base.endswith(".py"))
+            or base.endswith("_test.py"))
+
+
 def has_fixture_decorator(func):
     for d in func.decorator_list:
         target = d.func if isinstance(d, ast.Call) else d
@@ -1131,17 +1221,24 @@ def analyze_file(file):
     except SyntaxError:
         return findings
 
+    collected = is_pytest_test_file(file)
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name.startswith("test"):
+            # A top-level `test*` function is only a real (rotten-green) test if
+            # pytest would collect the file. A `def test_...` in a non-test module
+            # (a lint/format fixture like pylint's tests/functional/*.py or black's
+            # tests/data/cases/*.py, or a plain helper module) is never run, so its
+            # empty/weak body is not a false-green test.
+            if node.name.startswith("test") and collected:
                 analyze_function(node, file, findings)
-            elif looks_like_loose_test(node) and not has_fixture_decorator(node) \
+            elif is_pytest_test_file(file) and looks_like_loose_test(node) \
+                    and not has_fixture_decorator(node) \
                     and not is_web_route_handler(node) \
                     and not name_used_at_module_level(tree, node.name):
                 findings.append(Finding(file, node.lineno, "C4",
                                         "'%s' does not start with test_, pytest skips it" % node.name))
         elif isinstance(node, ast.ClassDef):
-            if node.name.startswith("Test"):
+            if node.name.startswith("Test") and collected:
                 has_init = any(
                     isinstance(m, ast.FunctionDef) and m.name == "__init__"
                     for m in node.body
@@ -1149,10 +1246,14 @@ def analyze_file(file):
                 if has_init:
                     findings.append(Finding(file, node.lineno, "C4b",
                                             "test class with __init__ is collected only if subclassed"))
+                # a class-level skip/xfail marker makes every empty method in it a
+                # deliberate placeholder, not a rotten-green test.
+                class_skipped = has_skip_decorator(node)
                 for m in node.body:
                     if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         if m.name.startswith("test"):
-                            analyze_function(m, file, findings, in_class=True)
+                            analyze_function(m, file, findings, in_class=True,
+                                             skip_exempt=class_skipped)
 
     for i, line in enumerate(source.splitlines(), start=1):
         if re.match(r"^\s*#\s*assert\b", line):
