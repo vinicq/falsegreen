@@ -61,6 +61,49 @@ def test_hypothesis_given_empty_body_is_not_c2(tmp_path):
     assert "C2" not in out
 
 
+def test_skip_decorated_empty_test_is_not_c2(tmp_path):
+    # an empty body under @pytest.mark.skip is a deliberate placeholder, not a
+    # rotten-green test: the marker stops it running and passing silently.
+    out = scan_source(tmp_path, """
+        @pytest.mark.skip(reason="not implemented")
+        def test_x():
+            pass
+    """)
+    assert "C2" not in out
+
+
+def test_class_level_skip_exempts_empty_methods(tmp_path):
+    # a class-level @mark.skip makes every empty method a placeholder (paramiko
+    # TestCanonicalizationOfCNAMEs). No C2 on the methods.
+    out = scan_source(tmp_path, """
+        @mark.skip
+        class TestCanon:
+            def test_one_to_one(self):
+                pass
+            def test_many_to_many(self):
+                pass
+    """)
+    assert "C2" not in out
+
+
+def test_empty_test_in_non_collected_file_is_not_flagged(tmp_path):
+    # a `def test_*` in a module pytest does not collect (not test_*.py / *_test.py
+    # / conftest.py) is never run, so its empty body is not a false-green test:
+    # pylint's tests/functional/*.py lint fixtures, black's tests/data/cases/*.py.
+    f = tmp_path / "missing_param_doc.py"
+    f.write_text("def test_tolerate(x, y):\n    pass\n", encoding="utf-8")
+    codes = {a.code for a in analyze_file(str(f))}
+    assert "C2" not in codes
+
+
+def test_empty_test_in_collected_file_still_flagged(tmp_path):
+    # the same empty test in a real test_*.py file IS a rotten-green test.
+    f = tmp_path / "test_real.py"
+    f.write_text("def test_tolerate():\n    pass\n", encoding="utf-8")
+    codes = {a.code for a in analyze_file(str(f))}
+    assert "C2" in codes
+
+
 def test_flags_self_compare(tmp_path):
     # bare operands compared to themselves are a tautology (no call: a call on
     # each side could be a real __eq__/identity check, see test below).
@@ -175,12 +218,86 @@ def test_eq_hash_membership_pair_is_not_self_compare(tmp_path):
     assert "C7" not in codes
 
 
+def test_identity_pair_with_is_not_peer_is_not_self_compare(tmp_path):
+    # reflexive identity (x is x) + a discriminating `is not <distinct peer>` on
+    # the same operand is a deliberate identity test (scrapy cached-property /
+    # urllib3 copy tests). No C7.
+    codes = scan_source(tmp_path, """
+        def test_copy():
+            assert request.flags is request.flags
+            assert request.flags is not original_flags
+    """)
+    assert "C7" not in codes
+
+
+def test_self_compare_with_neq_literal_is_not_self_compare(tmp_path):
+    # `x == x` next to `x != "foo"` (a non-trivial literal of a different type)
+    # is an __eq__ semantics test: it proves __eq__ discriminates (hypothesis
+    # test_basic_equality / arrow test_eq). No C7.
+    codes = scan_source(tmp_path, """
+        def test_basic_equality():
+            x = IntList([1, 2, 3])
+            assert x == x
+            assert x != "foo"
+    """)
+    assert "C7" not in codes
+
+
+def test_eq_hash_pair_is_not_self_compare(tmp_path):
+    # reflexive (i == i) + a companion hash(i) check is the __hash__ half of a
+    # deliberate eq/hash test (attrs test_dunders). No C7.
+    codes = scan_source(tmp_path, """
+        def test_hash():
+            i = C(1)
+            assert i == i
+            assert hash(i) == hash(i)
+    """)
+    assert "C7" not in codes
+
+
+def test_lone_cached_property_identity_still_flags(tmp_path):
+    # `x.attr is x.attr` with NO discriminating counterpart stays C7: statically
+    # indistinguishable from a typo tautology like scrapy's
+    # `r2.errback is r2.errback`. The semantic pass / an inline-ignore adjudicates.
+    codes = scan_source(tmp_path, """
+        def test_x():
+            assert obj.attr is obj.attr
+    """)
+    assert "C7" in codes
+
+
 def test_flags_swallowing_try(tmp_path):
     assert "C3" in scan_source(tmp_path, """
         def test_x():
             try:
                 assert resp() == 1
             except Exception:
+                pass
+    """)
+
+
+def test_specific_non_assertion_except_is_not_c3(tmp_path):
+    # `except TestingException` does NOT catch AssertionError, so an assert in the
+    # try is not silenced - AssertionError propagates and still fails the test
+    # (pydantic test_generics). No C3, even though the name ends in "Exception".
+    codes = scan_source(tmp_path, """
+        def test_x():
+            try:
+                assert recursively_defined_type_refs()
+                raise TestingException
+            except TestingException:
+                pass
+    """)
+    assert "C3" not in codes
+
+
+def test_except_assertion_error_still_flags_c3(tmp_path):
+    # `except AssertionError` explicitly swallows the assert. Still C3.
+    assert "C3" in scan_source(tmp_path, """
+        def test_x():
+            try:
+                assert resp() == 1
+            except AssertionError:
                 pass
     """)
 
