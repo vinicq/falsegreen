@@ -73,6 +73,54 @@ def test_is_between_two_method_calls_is_not_self_compare(tmp_path):
     assert "C7" not in codes
 
 
+def test_lone_self_compare_still_flags_with_a_distinct_neq(tmp_path):
+    # a `x == x` next to `y != z` (a DIFFERENT operand) is still a lone
+    # tautology: the inequality is not about x, so C7 must still fire.
+    codes = scan_source(tmp_path, """
+        def test_x():
+            assert a == a
+            assert b != c
+    """)
+    assert "C7" in codes
+
+
+def test_eq_reflexivity_pair_is_not_self_compare(tmp_path):
+    # reflexive (x == x) + discriminating (not x == y) on the SAME operand is a
+    # legitimate __eq__ semantics test (aiohttp test_stream_response_eq). No C7.
+    codes = scan_source(tmp_path, """
+        def test_stream_response_eq():
+            resp1 = web.StreamResponse()
+            resp2 = web.StreamResponse()
+            assert resp1 == resp1
+            assert not resp1 == resp2
+    """)
+    assert "C7" not in codes
+
+
+def test_eq_reflexivity_with_neq_is_not_self_compare(tmp_path):
+    # same pattern written with != (aiohttp test_eq): reflexive + !=. No C7.
+    codes = scan_source(tmp_path, """
+        def test_eq():
+            req1 = make_request()
+            req2 = make_request()
+            assert req1 != req2
+            assert req1 == req1
+    """)
+    assert "C7" not in codes
+
+
+def test_eq_hash_membership_pair_is_not_self_compare(tmp_path):
+    # reflexive (ws == ws) + a membership check on the same operand (ws in {ws})
+    # is a deliberate __eq__/__hash__ test (starlette test_websockets). No C7.
+    codes = scan_source(tmp_path, """
+        def test_websocket_hashable():
+            websocket = WebSocket(scope)
+            assert websocket == websocket
+            assert websocket in {websocket}
+    """)
+    assert "C7" not in codes
+
+
 def test_flags_swallowing_try(tmp_path):
     assert "C3" in scan_source(tmp_path, """
         def test_x():
@@ -349,6 +397,99 @@ def test_patch_decorator_injected_mock_typo_is_flagged(tmp_path):
             svc.assert_called_once
     """)
     assert "C13" in codes
+
+
+def test_nested_forgotten_test_still_flags(tmp_path):
+    # a no-arg, undecorated nested def named test* that is NEVER referenced is a
+    # genuinely uncollected, never-run test (someone indented it by accident):
+    # pytest skips it and nothing calls it, so C4 must still fire.
+    assert "C4" in scan_source(tmp_path, """
+        def test_outer():
+            assert setup() == 1
+            def test_inner():
+                assert compute() == 2
+    """)
+
+
+def test_nested_referenced_helper_coroutine_is_not_uncollected_test(tmp_path):
+    # a nested test*-named coroutine that the outer test awaits/schedules DOES
+    # run (aiohttp test_run_app: `asyncio.create_task(test())`). Not forgotten.
+    codes = scan_source(tmp_path, """
+        async def test_shutdown():
+            async def test():
+                assert finished is False
+            t = asyncio.create_task(test())
+            await t
+    """)
+    assert "C4" not in codes
+
+
+def test_nested_route_handler_is_not_uncollected_test(tmp_path):
+    # @app.get/@app.post route handler named test* (fastapi, sanic). Not C4.
+    codes = scan_source(tmp_path, """
+        def test_multiple_path():
+            app = FastAPI()
+
+            @app.get("/test1")
+            async def test(var=None):
+                return {"foo": var}
+
+            client = TestClient(app)
+            assert client.get("/test1").status_code == 200
+    """)
+    assert "C4" not in codes
+
+
+def test_nested_werkzeug_application_handler_is_not_uncollected_test(tmp_path):
+    # @Request.application WSGI app named test_app (werkzeug). Not C4.
+    codes = scan_source(tmp_path, """
+        def test_multiple_cookies():
+            @Request.application
+            def test_app(request):
+                return Response("ok")
+
+            client = Client(test_app)
+            assert client.get("/").text == "[]"
+    """)
+    assert "C4" not in codes
+
+
+def test_nested_local_callback_handler_is_not_uncollected_test(tmp_path):
+    # undecorated local callback that takes a `request` arg (aiohttp/sanic
+    # style) named test*: a handler passed to the framework, not a test. No C4.
+    codes = scan_source(tmp_path, """
+        async def test_json():
+            async def test_handler(request):
+                return web.Response()
+            app.router.add_post("/", test_handler)
+            assert (await client.post("/")).status == 200
+    """)
+    assert "C4" not in codes
+
+
+def test_top_level_route_handler_is_not_uncollected_test(tmp_path):
+    # a top-level route handler decorated with @app.get that happens to assert
+    # in its body (fastapi test_dependency_contextvars get_user). Not C4.
+    codes = scan_source(tmp_path, """
+        @app.get("/user")
+        def get_user():
+            request_state = ctx.get()
+            assert request_state
+            return request_state
+    """)
+    assert "C4" not in codes
+
+
+def test_top_level_entry_point_called_is_not_uncollected_test(tmp_path):
+    # a standalone-script entry point `main` that is invoked (asyncio.run(main()))
+    # runs - it is not a forgotten pytest test (aiohttp tests/isolated/check_*.py).
+    codes = scan_source(tmp_path, """
+        async def main():
+            assert leak_detected() is False
+
+        asyncio.run(main())
+    """)
+    assert "C4" not in codes
 
 
 def test_run_prefixed_forgotten_test_is_flagged(tmp_path):
