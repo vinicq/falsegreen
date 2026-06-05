@@ -40,8 +40,40 @@ def test_flags_empty_test(tmp_path):
     """)
 
 
+def test_hypothesis_given_is_not_empty(tmp_path):
+    # a @given body with no explicit assert is idiomatic: the oracle is
+    # "no exception over all generated inputs", so it is neither C2 nor C2b.
+    out = scan_source(tmp_path, """
+        @given(st.integers())
+        def test_x(n):
+            encode(n)
+    """)
+    assert "C2" not in out
+    assert "C2b" not in out
+
+
+def test_hypothesis_given_empty_body_is_not_c2(tmp_path):
+    out = scan_source(tmp_path, """
+        @given(st.integers())
+        def test_x(n):
+            pass
+    """)
+    assert "C2" not in out
+
+
 def test_flags_self_compare(tmp_path):
+    # bare operands compared to themselves are a tautology (no call: a call on
+    # each side could be a real __eq__/identity check, see test below).
     assert "C7" in scan_source(tmp_path, """
+        def test_x():
+            assert d == d
+    """)
+
+
+def test_self_compare_with_call_is_not_c7(tmp_path):
+    # `cls(1) == cls(1)` / `f(d) == f(d)` is the canonical value-equality test,
+    # not a tautology: with default identity __eq__ it would fail.
+    assert "C7" not in scan_source(tmp_path, """
         def test_x():
             assert f(d) == f(d)
     """)
@@ -917,7 +949,7 @@ def test_fingerprint_survives_prepended_blank_lines(tmp_path):
 
 def test_fingerprint_differs_by_code_and_snippet(tmp_path):
     f1 = _write(tmp_path / "test_a.py", "def test_x():\n    assert True\n")
-    f2 = _write(tmp_path / "test_b.py", "def test_y():\n    assert f(d) == f(d)\n")
+    f2 = _write(tmp_path / "test_b.py", "def test_y():\n    assert d == d\n")
     a = run([f1])[0]
     b = run([f2])[0]
     assert fingerprint(a) != fingerprint(b)  # different file/code/snippet

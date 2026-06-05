@@ -368,13 +368,15 @@ def assert_self_compare(test):
                 return False
             if not identical:
                 return False
-            # `x is x` / `obj.attr is obj.attr` is always true. But `f() is f()`
-            # is NOT: it asserts two separate calls return the SAME object, the
-            # canonical lru_cache / memoization / singleton identity test. Only
-            # flag an `is` self-compare when no call is involved.
-            if isinstance(op, ast.Is):
-                if any(isinstance(n, ast.Call) for n in ast.walk(test.left)):
-                    return False
+            # `x is x` / `x == x` / `obj.attr == obj.attr` is always true. But a
+            # call on each side is NOT a tautology: two separate calls may return
+            # two distinct objects. `f() is f()` is the lru_cache / singleton
+            # identity test; `cls(1) == cls(1)` / `Color("red") == Color("red")`
+            # is the canonical __eq__ value-equality test (attrs, pydantic,
+            # dataclasses). With default identity __eq__ those would FAIL, so a
+            # green one is a real check. Only flag a self-compare with no call.
+            if any(isinstance(n, ast.Call) for n in ast.walk(test.left)):
+                return False
             return True
     return False
 
@@ -927,7 +929,7 @@ def analyze_function(func, file, findings, in_class=False):
     line = func.lineno
     mock_names = gather_mock_names(func)
 
-    if not has_assertion(func):
+    if not has_assertion(func) and not has_property_test_decorator(func):
         if empty_body(func):
             findings.append(Finding(file, line, "C2"))
         elif makes_any_call(func):
@@ -1097,6 +1099,33 @@ def looks_like_loose_test(func):
     return False
 
 
+def has_property_test_decorator(func):
+    """The test is a property/fuzz test driven by a framework that generates
+    inputs and runs the body many times: hypothesis `@given`, `@fuzz`, or a
+    `@hypothesis...` decorator. A body with no explicit assert is idiomatic
+    there - the implicit oracle is 'no exception over all generated inputs' - so
+    it is not an empty/checks-nothing test."""
+    for d in func.decorator_list:
+        target = d.func if isinstance(d, ast.Call) else d
+        name = dotted_name(target)
+        last = name.split(".")[-1]
+        if last in ("given", "fuzz") or "hypothesis" in name:
+            return True
+    return False
+
+
+def is_pytest_test_file(file):
+    """A file pytest collects by default: test_*.py, *_test.py, or conftest.py.
+    A loose, non-`test_`-named function only counts as a forgotten test when it
+    lives in a collected file. In a helper/fixtures/example module (e.g.
+    `_concurrency_fixtures.py`, a perf `command.py`) such a function is never a
+    test pytest would have run, so it is not 'forgotten'."""
+    base = os.path.basename(file)
+    return (base == "conftest.py"
+            or (base.startswith("test_") and base.endswith(".py"))
+            or base.endswith("_test.py"))
+
+
 def has_fixture_decorator(func):
     for d in func.decorator_list:
         target = d.func if isinstance(d, ast.Call) else d
@@ -1135,7 +1164,8 @@ def analyze_file(file):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name.startswith("test"):
                 analyze_function(node, file, findings)
-            elif looks_like_loose_test(node) and not has_fixture_decorator(node) \
+            elif is_pytest_test_file(file) and looks_like_loose_test(node) \
+                    and not has_fixture_decorator(node) \
                     and not is_web_route_handler(node) \
                     and not name_used_at_module_level(tree, node.name):
                 findings.append(Finding(file, node.lineno, "C4",
