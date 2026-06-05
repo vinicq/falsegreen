@@ -205,9 +205,15 @@ different natures.
   every commit, the self-scan, because the false-positive detector is not allowed
   to contain one. And it is validated against real-world Python projects (Python
   web and service codebases with large test suites), where it has found and fixed
-  its own false positives before they shipped. Every project it has been run on,
-  what each run revealed, and the decision that followed are logged in
-  [VALIDATION.md](VALIDATION.md).
+  its own false positives before they shipped. The most recent pass ran the
+  scanner over 8 projects, each above 200 GitHub stars with 500 or more test
+  functions (httpx, starlette, flask, fastapi, django-rest-framework, aiohttp,
+  sanic, werkzeug). That pass surfaced about 47 HIGH-confidence false positives in
+  two rule classes (C7 on deliberate `__eq__` tests, C4 on test-named route
+  handlers and local callbacks). Both were fixed, each with a fires-on-bad and a
+  stays-clean regression test, and a re-scan brought the HIGH count to 0 across all
+  8 projects. Every project it has been run on, what each run revealed, and the
+  decision that followed are logged in [VALIDATION.md](VALIDATION.md).
 - **The semantic pass (LLM, any language).** Cross-language coverage runs through
   this pass, so its reliability is measured, not assumed. The validation is a
   benchmark corpus: tests planted with a known ground truth, a test that mocks the
@@ -215,8 +221,15 @@ different natures.
   re-implements the production formula, in Python and in other languages, scored for
   precision and recall with precision held above recall. Because the pass runs on an
   LLM it is non-deterministic, so this is a periodic skill-validation artifact, not
-  a CI gate. (The corpus and its measured numbers are being built out; this section
-  will carry the figures once they land.)
+  a CI gate. The first labeled corpus has 24 Python cases (10 rotten, 14 sound)
+  across cases 10, 11, 12, and 18, with sound look-alikes and plain controls. Run
+  blind on a small model (Claude Haiku), the pass scored precision 1.00 (no false
+  alarms on the 14 sound tests), recall 0.70, and 1.00 recall on the clear-cut
+  smells; the only misses were borderline cases (a pure-delegation passthrough, a
+  trivial one-operator formula) where the precision-first guardrail defers to
+  "sound". That is the evidence behind the design claim that a small model is
+  enough for a precision-first semantic pass. The number to grow is recall: a
+  larger corpus, a second annotator, and multi-vote runs are the next step.
 
 ---
 
