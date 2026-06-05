@@ -6,6 +6,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- C7 (HIGH) no longer flags a deliberate `__eq__`/`__hash__` test. `assert x == x`
+  beside a discriminating or membership check on the same operand (`assert x != y`,
+  `assert not x == y`, `assert x in {x}`) is reflexive-equality testing, not a
+  tautology. A lone `assert x == x` still fires. Found validating aiohttp/starlette.
+- C4 (HIGH) no longer flags a `test*`-named web route handler / WSGI app
+  (`@app.get`/`@app.post`/`@Request.application`/`@click.command`), nor a function
+  that is referenced (called, awaited, `asyncio.create_task`, or passed as a
+  callback) - a referenced function runs, so it is not a forgotten test. Only a
+  nested `test*` with a check in its own body that is never referenced, or a
+  top-level test-shaped function never called, still fires. Found validating
+  fastapi, werkzeug, sanic, flask, aiohttp.
+
 ### Added
 - C22 (OFF by default): an `async def test_*` that asserts but never awaits the unit
   (The Liar). Opt in via `[tool.falsegreen] severity = { C22 = "low" }`. First

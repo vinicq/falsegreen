@@ -379,6 +379,48 @@ def assert_self_compare(test):
     return False
 
 
+def in_equality_semantics_test(func, self_cmp):
+    """True if the enclosing test exercises the same operand's equality/hashing.
+
+    `assert x == x` is only a tautology in isolation. Beside `assert x != y`,
+    `assert not x == y`, or `assert x in {x}` on the SAME operand it is the
+    reflexive half of a deliberate __eq__/__hash__ test (the value equals
+    itself AND behaves correctly against distinct values / in a set), not a
+    bug. Real examples: aiohttp `assert resp1 == resp1; assert not resp1 ==
+    resp2`; starlette `assert ws == ws; assert ws in {ws}`. A lone `assert x ==
+    x` with no such counterpart stays C7."""
+    try:
+        operand = ast.dump(self_cmp.left)
+    except Exception:
+        return False
+
+    def _mentions_operand(parts):
+        for p in parts:
+            try:
+                if ast.dump(p) == operand:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    for n in ast.walk(func):
+        # x != y / x in {x} / x not in y: a discriminating or membership check
+        # on the self-compared operand (membership relies on __eq__/__hash__).
+        if isinstance(n, ast.Compare) and n is not self_cmp:
+            if any(isinstance(o, (ast.NotEq, ast.In, ast.NotIn)) for o in n.ops):
+                if _mentions_operand([n.left, *n.comparators]):
+                    return True
+        # not (x == y)
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not):
+            inner = n.operand
+            if isinstance(inner, ast.Compare) and any(
+                isinstance(o, ast.Eq) for o in inner.ops
+            ):
+                if _mentions_operand([inner.left, *inner.comparators]):
+                    return True
+    return False
+
+
 def _const_value(node):
     if isinstance(node, ast.Constant):
         return node.value
@@ -758,6 +800,76 @@ def func_has_any_check(func):
     return False
 
 
+# Decorator leaf names that mark a function as a web route handler / WSGI app,
+# not a test: @app.get/@app.post/... (fastapi, sanic, flask), @app.route,
+# @Request.application (werkzeug), @app.websocket/@app.signal/@app.middleware.
+ROUTE_DECORATOR_NAMES = {
+    "get", "post", "put", "delete", "patch", "head", "options", "trace",
+    "route", "api_route", "websocket", "application", "middleware",
+    "signal", "listener", "on_request", "on_response", "endpoint",
+}
+
+
+def is_web_route_handler(func):
+    for d in func.decorator_list:
+        target = d.func if isinstance(d, ast.Call) else d
+        if dotted_name(target).split(".")[-1] in ROUTE_DECORATOR_NAMES:
+            return True
+    return False
+
+
+def takes_callback_args(func):
+    """A nested def that accepts a parameter (other than self/cls) is being used
+    as a callback/handler (it receives `request`, a query value, ...), not a
+    forgotten pytest test. A real nested test would take no fixtures (pytest
+    cannot inject them into a nested def anyway)."""
+    args = func.args
+    n_pos = len(args.args)
+    if n_pos and args.args[0].arg in ("self", "cls"):
+        n_pos -= 1
+    return bool(n_pos or args.vararg or args.kwarg or args.kwonlyargs)
+
+
+def has_direct_check(func):
+    """An assertion (or pytest.raises) directly in this function's own body,
+    not buried in a deeper nested def. A genuine forgotten test asserts in its
+    own body; a local orchestration coroutine whose asserts live in further
+    nested helpers does not."""
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Assert):
+            return True
+        if isinstance(n, ast.Call) and is_call_to(n, "pytest.raises", "raises"):
+            return True
+    return False
+
+
+def name_is_used(scope, name):
+    """The name appears as a value (Load) somewhere in `scope` - the function is
+    called, awaited, scheduled (asyncio.create_task), or passed as a callback,
+    so it actually runs. A genuinely forgotten test is defined and never
+    referenced (the author relied on pytest collecting it, and it never does)."""
+    for n in ast.walk(scope):
+        if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load):
+            return True
+    return False
+
+
+def looks_like_forgotten_nested_test(func, scope):
+    """A nested `def test*` that is genuinely an uncollected, never-run test -
+    not a wired local construct. Real projects nest a `test*`-named function
+    only as a route handler (@app.get), a CLI command (@click.command), a
+    callback passed to the framework, or a local helper coroutine that the test
+    awaits - never as a test they expect pytest to collect. So flag only the
+    bare shape: undecorated, no parameters, with a real check in its own body,
+    and never referenced (so it truly never runs)."""
+    return (
+        not func.decorator_list
+        and not takes_callback_args(func)
+        and has_direct_check(func)
+        and not name_is_used(scope, func.name)
+    )
+
+
 def analyze_function(func, file, findings, in_class=False):
     line = func.lineno
     mock_names = gather_mock_names(func)
@@ -771,7 +883,7 @@ def analyze_function(func, file, findings, in_class=False):
 
     for n in ast.walk(func):
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n is not func:
-            if n.name.startswith("test"):
+            if n.name.startswith("test") and looks_like_forgotten_nested_test(n, func):
                 findings.append(Finding(file, n.lineno, "C4",
                                         "nested test function is not collected"))
 
@@ -780,7 +892,7 @@ def analyze_function(func, file, findings, in_class=False):
             test = n.test
             if assert_always_true(test):
                 findings.append(Finding(file, n.lineno, "C5"))
-            elif assert_self_compare(test):
+            elif assert_self_compare(test) and not in_equality_semantics_test(func, test):
                 findings.append(Finding(file, n.lineno, "C7"))
             else:
                 if assert_exact_float(test):
@@ -970,7 +1082,9 @@ def analyze_file(file):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name.startswith("test"):
                 analyze_function(node, file, findings)
-            elif looks_like_loose_test(node) and not has_fixture_decorator(node):
+            elif looks_like_loose_test(node) and not has_fixture_decorator(node) \
+                    and not is_web_route_handler(node) \
+                    and not name_is_used(tree, node.name):
                 findings.append(Finding(file, node.lineno, "C4",
                                         "'%s' does not start with test_, pytest skips it" % node.name))
         elif isinstance(node, ast.ClassDef):

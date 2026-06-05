@@ -48,7 +48,14 @@ Notes.
 - **C4**: the cruelest one, because coverage tools and the green bar both lie. Verify
   with `pytest --collect-only`; the count must rise when you add a test. Function
   names matching a helper prefix (`assert_`, `check_`, `verify_`, ...) are skipped
-  to avoid flagging assertion helpers.
+  to avoid flagging assertion helpers. Look-alikes that are NOT C4 (and are
+  exempted): a `test*`-named function that is a web route handler / WSGI app
+  (`@app.get`/`@app.post`/`@Request.application`/`@click.command`), or one that is
+  referenced - called, awaited, scheduled (`asyncio.create_task(test())`), or
+  passed as a callback (`pytest.raises(..., test_cb)`). A referenced function runs,
+  so it is not a forgotten test. Only a nested `test*` that has a check in its own
+  body AND is never referenced, or a top-level test-shaped function never called,
+  stays flagged.
 - **C4b**: a `Test*` class with `__init__` is not collected by pytest, but that is
   intentional for abstract base test classes that are subclassed. So it only warns
   (LOW), it does not block.
@@ -80,7 +87,12 @@ Notes.
 - **C7**: detected when both sides are AST-identical. `assert f(d) == f(d)` is the
   disguised version. But `f() is f()` is NOT C7: with `is`, two separate calls
   assert they return the SAME object, the canonical lru_cache / singleton identity
-  test. Only an `is` with no call (`x is x`) is always true.
+  test. Only an `is` with no call (`x is x`) is always true. Look-alike that is NOT
+  C7: a deliberate `__eq__`/`__hash__` test, where `assert x == x` sits beside a
+  discriminating or membership check on the same operand - `assert x != y`,
+  `assert not x == y`, or `assert x in {x}`. That pair tests equality semantics
+  (reflexive AND distinguishing), so it is exempted. A lone `assert x == x` with no
+  such counterpart stays C7.
 - **C8**: exact `==` on a fractional float (0.1, 0.3, 2.5) fails on rounding, not
   on a bug. `== 0.0` and `== 1.0` are exempt: both are exactly representable and
   are the usual all/none ratio sentinels (0/N, N/N).
@@ -101,7 +113,12 @@ Notes.
   how `x` formats, not its value. A repr tweak breaks the test for no real defect,
   and a value bug can hide behind matching text. Assert the value, or a field, not
   its stringification. Comparing a real string attribute (`obj.name == "x"`) is
-  fine, not C18.
+  fine, not C18. Common look-alike (a judgment call, why C18 stays LOW): a test
+  whose PURPOSE is the `__repr__`/`__str__` contract - `assert repr(headers) ==
+  "Headers(...)"`. There the stringification IS the unit under test, so it is
+  legitimate, not a value proxy. The scanner cannot tell intent structurally; it
+  only warns and the semantic pass adjudicates. Real-project note: httpx asserts
+  `repr` deliberately in dozens of places, and every one is sound.
 
 ---
 
