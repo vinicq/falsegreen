@@ -109,6 +109,28 @@ def test_eq_reflexivity_with_neq_is_not_self_compare(tmp_path):
     assert "C7" not in codes
 
 
+def test_self_compare_with_neq_none_still_flags(tmp_path):
+    # `x == x` next to `x != None` is NOT an __eq__ semantics test: None is a
+    # constant, not a distinct peer object. The tautology must still fire.
+    codes = scan_source(tmp_path, """
+        def test_x():
+            assert obj == obj
+            assert obj != None
+    """)
+    assert "C7" in codes
+
+
+def test_self_compare_with_unrelated_membership_still_flags(tmp_path):
+    # `x == x` next to `x in some_registry` (membership in a non-literal
+    # container) is not eq/hash testing of a literal holding x. Still C7.
+    codes = scan_source(tmp_path, """
+        def test_x():
+            assert obj == obj
+            assert obj in some_registry
+    """)
+    assert "C7" in codes
+
+
 def test_eq_hash_membership_pair_is_not_self_compare(tmp_path):
     # reflexive (ws == ws) + a membership check on the same operand (ws in {ws})
     # is a deliberate __eq__/__hash__ test (starlette test_websockets). No C7.
@@ -478,6 +500,21 @@ def test_top_level_route_handler_is_not_uncollected_test(tmp_path):
             return request_state
     """)
     assert "C4" not in codes
+
+
+def test_forgotten_test_not_excused_by_unrelated_samename_local(tmp_path):
+    # a top-level forgotten test stays flagged even if a DIFFERENT function
+    # rebinds the same name locally and Loads it - that reference does not run
+    # the forgotten test, so the module-level check must ignore it.
+    codes = scan_source(tmp_path, """
+        def verifica_total():
+            assert soma() == 3
+
+        def unrelated():
+            verifica_total = 5
+            print(verifica_total)
+    """)
+    assert "C4" in codes
 
 
 def test_top_level_entry_point_called_is_not_uncollected_test(tmp_path):

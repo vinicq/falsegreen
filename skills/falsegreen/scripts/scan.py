@@ -383,40 +383,71 @@ def in_equality_semantics_test(func, self_cmp):
     """True if the enclosing test exercises the same operand's equality/hashing.
 
     `assert x == x` is only a tautology in isolation. Beside `assert x != y`,
-    `assert not x == y`, or `assert x in {x}` on the SAME operand it is the
-    reflexive half of a deliberate __eq__/__hash__ test (the value equals
-    itself AND behaves correctly against distinct values / in a set), not a
-    bug. Real examples: aiohttp `assert resp1 == resp1; assert not resp1 ==
-    resp2`; starlette `assert ws == ws; assert ws in {ws}`. A lone `assert x ==
-    x` with no such counterpart stays C7."""
+    `assert not x == y` (y a DISTINCT object), or `assert x in {x}` (membership
+    in a literal that holds x) it is the reflexive half of a deliberate
+    __eq__/__hash__ test (the value equals itself AND behaves correctly against a
+    distinct value / in a set), not a bug. Real examples: aiohttp `assert resp1
+    == resp1; assert not resp1 == resp2`; starlette `assert ws == ws; assert ws
+    in {ws}`. The discriminating counterpart must involve a distinct peer (not a
+    constant like None) or a literal container holding x; a lone `assert x == x`,
+    or one merely next to `x != None` or `x in some_registry`, stays C7."""
     try:
         operand = ast.dump(self_cmp.left)
     except Exception:
         return False
 
-    def _mentions_operand(parts):
+    # a distinct peer is another variable-like operand (a sibling object under
+    # test, e.g. resp2), NOT a constant - `x != None` does not make `x == x`
+    # an equality-semantics test.
+    PEER = (ast.Name, ast.Attribute, ast.Subscript)
+
+    def _has_distinct_peer(parts):
+        mentions = distinct = False
         for p in parts:
             try:
-                if ast.dump(p) == operand:
-                    return True
+                same = ast.dump(p) == operand
             except Exception:
                 continue
+            if same:
+                mentions = True
+            elif isinstance(p, PEER):
+                distinct = True
+        return mentions and distinct
+
+    def _literal_holds_operand(container):
+        if isinstance(container, (ast.Set, ast.List, ast.Tuple)):
+            for e in container.elts:
+                try:
+                    if ast.dump(e) == operand:
+                        return True
+                except Exception:
+                    continue
         return False
 
     for n in ast.walk(func):
-        # x != y / x in {x} / x not in y: a discriminating or membership check
-        # on the self-compared operand (membership relies on __eq__/__hash__).
         if isinstance(n, ast.Compare) and n is not self_cmp:
-            if any(isinstance(o, (ast.NotEq, ast.In, ast.NotIn)) for o in n.ops):
-                if _mentions_operand([n.left, *n.comparators]):
+            # x != peer: a discriminating check against a distinct object.
+            if any(isinstance(o, ast.NotEq) for o in n.ops):
+                if _has_distinct_peer([n.left, *n.comparators]):
                     return True
-        # not (x == y)
+            # x in {x} / x in [x, ...]: membership in a literal holding x, which
+            # exercises __eq__/__hash__. `x in some_registry` does NOT qualify.
+            try:
+                left_is_operand = ast.dump(n.left) == operand
+            except Exception:
+                left_is_operand = False
+            if left_is_operand:
+                for op, comp in zip(n.ops, n.comparators):
+                    if isinstance(op, (ast.In, ast.NotIn)) \
+                            and _literal_holds_operand(comp):
+                        return True
+        # not (x == peer)
         if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not):
             inner = n.operand
             if isinstance(inner, ast.Compare) and any(
                 isinstance(o, ast.Eq) for o in inner.ops
             ):
-                if _mentions_operand([inner.left, *inner.comparators]):
+                if _has_distinct_peer([inner.left, *inner.comparators]):
                     return True
     return False
 
@@ -847,10 +878,32 @@ def name_is_used(scope, name):
     """The name appears as a value (Load) somewhere in `scope` - the function is
     called, awaited, scheduled (asyncio.create_task), or passed as a callback,
     so it actually runs. A genuinely forgotten test is defined and never
-    referenced (the author relied on pytest collecting it, and it never does)."""
+    referenced (the author relied on pytest collecting it, and it never does).
+    Used for NESTED defs, where `scope` is the single enclosing function: a
+    callback registered by bare name (`cleanup_ctx.append(run_test)`) counts."""
     for n in ast.walk(scope):
         if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load):
             return True
+    return False
+
+
+def name_used_at_module_level(tree, name):
+    """Like name_is_used but scoped for a TOP-LEVEL function, so an unrelated
+    same-name local in another function (a rebinding, a comprehension target)
+    does not count. The real forgotten-test signal is "never called and never
+    referenced at module level". Counts: a call target `name(...)` anywhere
+    (covers `asyncio.run(main())`), or a Load of `name` in module-level code."""
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) \
+                and n.func.id == name:
+            return True
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for n in ast.walk(stmt):
+            if isinstance(n, ast.Name) and n.id == name \
+                    and isinstance(n.ctx, ast.Load):
+                return True
     return False
 
 
@@ -1084,7 +1137,7 @@ def analyze_file(file):
                 analyze_function(node, file, findings)
             elif looks_like_loose_test(node) and not has_fixture_decorator(node) \
                     and not is_web_route_handler(node) \
-                    and not name_is_used(tree, node.name):
+                    and not name_used_at_module_level(tree, node.name):
                 findings.append(Finding(file, node.lineno, "C4",
                                         "'%s' does not start with test_, pytest skips it" % node.name))
         elif isinstance(node, ast.ClassDef):
