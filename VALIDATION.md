@@ -43,4 +43,19 @@ F1 0.82. The three misses were borderline cases where the precision-first guardr
 defers to "sound". A real-module cross-check (aiohttp, flask) judged 16 of 16 tests
 sound and independently agreed with the C7 and C4 fixes.
 
+## Completed (TypeScript, semantic pass only)
+
+The scanner is Python-only by design, so TypeScript is covered by the LLM
+semantic pass alone. A labeled corpus of 20 TypeScript cases (8 rotten, 12 sound)
+in Jest/Vitest idioms, across cases 10, 11, 12, 18, run blind on the same small
+model (Claude Haiku), scored: precision 1.00 (no false alarms on the 12 sound
+tests), recall 0.625 overall, recall 1.00 on the clear-cut smells, F1 0.77.
+
+The result reproduces the Python pattern across a different language and test
+framework: perfect precision, and the only misses are the same boundary cases
+(a pure-delegation passthrough asserted through an edge mock, and a trivial
+single-operator formula re-implemented in the test) where the precision-first
+guardrail defers to "sound". Those boundaries are tracked as open issues, not
+treated as tool defects.
+
 This table is updated as each language and project is validated.

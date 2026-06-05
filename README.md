@@ -229,7 +229,11 @@ different natures.
   trivial one-operator formula) where the precision-first guardrail defers to
   "sound". That is the evidence behind the design claim that a small model is
   enough for a precision-first semantic pass. The number to grow is recall: a
-  larger corpus, a second annotator, and multi-vote runs are the next step.
+  larger corpus, a second annotator, and multi-vote runs are the next step. A
+  second corpus of 20 TypeScript cases (Jest/Vitest) reproduced the pattern:
+  precision 1.00, recall 0.625, with the only misses being the same boundary
+  cases, evidence that the pass carries across languages and frameworks, not just
+  Python.
 
 ---
 
