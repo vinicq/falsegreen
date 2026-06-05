@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-05
+
 ### Fixed
 - C7 (HIGH) no longer flags a deliberate `__eq__`/`__hash__` test. `assert x == x`
   beside a discriminating or membership check on the same operand (`assert x != y`,
@@ -18,6 +20,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nested `test*` with a check in its own body that is never referenced, or a
   top-level test-shaped function never called, still fires. Found validating
   fastapi, werkzeug, sanic, flask, aiohttp.
+- C2/C2b (HIGH) no longer flag a `test*` function in a file pytest does not collect
+  (not `test_*.py`/`*_test.py`/`conftest.py`), such as pylint's `tests/functional`
+  lint fixtures or black's `tests/data/cases` format fixtures - those are never run.
+- C2/C2b no longer flag an empty body under a skip/xfail marker
+  (`@pytest.mark.skip`/`skipif`/`skipUnless`/`xfail`, on the function or its class):
+  the marker stops it running, so it is a deliberate placeholder.
+- C7 exemption broadened to count `is not <peer>`, `!=`/`not ==` against a
+  non-trivial literal, and a companion `hash(x)` as the discriminating counterpart
+  (scrapy/urllib3 identity tests, attrs/hypothesis/arrow eq tests). A lone
+  self-compare with no counterpart still fires.
+- C3 (HIGH) fires only when the `except` would actually swallow `AssertionError`
+  (bare `except`, `except Exception`/`BaseException`/`AssertionError`, or a tuple of
+  those). A specific `except SomethingException` no longer trips it.
 
 ### Added
 - C22 (OFF by default): an `async def test_*` that asserts but never awaits the unit
@@ -25,8 +40,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   off-by-default code; the resolver already supported an `off` catalog default.
 - Layer detection: each finding carries a `layer` (logic | web | browser) inferred
   from the file's imports, surfaced in JSON output and as a `layer:*` SARIF tag.
-  Lets a team triage by layer (a finding in pure logic is higher-signal than one in
-  a web/UI test). Metadata only, no change to which findings fire.
+- Layer-aware softening (issue #20): in a web/browser test, C6 no longer flags the
+  truthiness of an element-visibility predicate, an HTTP request, or a
+  response/page/locator object (that presence IS the assertion), and C14 is
+  suppressed for snapshot/visual-regression writes. Softening only: it never adds a
+  finding or raises confidence, and the vacuity codes (C2/C5/C7/C13/C3/...) are
+  layer-agnostic.
 
 ## [0.1.0] - 2026-06-03
 
