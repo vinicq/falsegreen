@@ -530,6 +530,242 @@ accountable, never to copy what it already does.
 
 ---
 
+# Additional patterns: beyond the eighteen cases
+
+The eighteen cases above cover the core families. The patterns below are extensions — tighter or more specific versions of the same traps — that falsegreen checks for separately because they appear often enough in real test suites to warrant their own code.
+
+## CC. The commented-out assert
+
+An `assert` that was disabled by commenting it out. The test still runs and still passes, but the check is gone. This is usually the mark of a test that was silenced because it started failing, rather than being fixed.
+
+```python
+# assert response.status_code == 200   # was failing, silenced
+assert response is not None  # only this runs
+```
+
+Fix it or delete the comment. A commented-out assertion is a decision to stop checking something — make that decision explicitly.
+
+## Sensitive equality (C18)
+
+Comparing `str(x)`, `repr(x)`, or an f-string of a value to a fixed string. This checks how the object prints, not what the object holds. If the `__repr__` method changes, the test breaks even though the behavior is correct. If it stays the same while the value changes, the test keeps passing.
+
+```python
+# Lying: only checks the formatted string, not the actual value
+assert str(result) == "User(id=42, name='Alice')"
+```
+
+Check the attributes directly:
+
+```python
+assert result.id == 42
+assert result.name == "Alice"
+```
+
+## pytest.raises wraps too much (C19)
+
+A `with pytest.raises(SomeError):` block that contains more than one statement. If the first statement raises, the rest never run, and the test passes even though the intended call was never reached.
+
+```python
+# Lying: if setup() raises, target() is never called
+with pytest.raises(ValueError):
+    setup()     # if this raises, target() is skipped
+    target()    # the line under test
+```
+
+Move everything out of the block except the one call that should raise:
+
+```python
+setup()
+with pytest.raises(ValueError):
+    target()
+```
+
+## Async test that never awaits the unit (C22)
+
+An `async def test_*` that calls the unit under test but never `await`s it. The call returns a coroutine object. The assertion runs against that object, not the result, and it passes because a non-None object is truthy and coroutine objects compare as equal to themselves.
+
+```python
+# Lying: fetch() is never awaited; coro is a coroutine object, not a result
+async def test_fetch():
+    coro = fetch(url)
+    assert coro is not None   # always true
+```
+
+Await the call:
+
+```python
+async def test_fetch():
+    result = await fetch(url)
+    assert result.status == 200
+```
+
+## Hard-coded file path (C23)
+
+A test that opens a file at a literal path: `open("data/fixtures/users.csv")` or `Path("config.json").read_text()`. The test is tied to a specific directory layout and will fail anywhere else. Worse, that literal is often a credential file, a private fixture, or something that lives outside the repo.
+
+Use `tmp_path` (pytest fixture) for temporary files, or store fixtures in the test directory and access them relative to `__file__`.
+
+## xfail without strict (C25)
+
+`@pytest.mark.xfail` marks a test as expected to fail. Without `strict=True`, when the test unexpectedly passes (XPASS), pytest treats it as a success and moves on. The bug was fixed, but the test is never promoted back to a normal test — it just silently goes from "expected to fail" to "passes by exception".
+
+Add `strict=True` or set `xfail_strict = true` in `[tool.pytest.ini_options]`. An XPASS then becomes a test failure, which forces you to remove the marker.
+
+## try/except/pass instead of pytest.raises (C27)
+
+A try block whose only handler is a bare pass or a variable assignment with no assertion. The test passes whether the exception is raised or not.
+
+```python
+# Lying: passes regardless of whether ValueError is raised
+def test_parse_error():
+    try:
+        parse("bad input")
+    except ValueError:
+        pass   # exception swallowed, test passes either way
+    assert True
+```
+
+Use `pytest.raises`:
+
+```python
+def test_parse_error():
+    with pytest.raises(ValueError, match="invalid"):
+        parse("bad input")
+```
+
+## pytest.raises binding never read (C28)
+
+`with pytest.raises(E) as exc:` declares a binding to inspect the exception, but `exc` is never read after the block. The exception type is verified, but its message, args, and attributes are not. A wrong exception with the right type passes undetected.
+
+```python
+# Lying: exc.value is never checked
+with pytest.raises(ValueError) as exc:
+    parse("bad input")
+# exc is never read — any ValueError passes
+```
+
+Add `assert "invalid" in str(exc.value)` or use the `match=` argument.
+
+## Direct env mutation (C29)
+
+`os.environ["KEY"] = value` (or `os.environ.update(...)` / `os.putenv(...)`) directly in a test. The mutation survives the test function and leaks to every test that runs after. Tests that depend on that variable passing or missing can then fail or pass unpredictably depending on order.
+
+Use `monkeypatch.setenv()`, which restores the original value automatically when the test ends.
+
+## HTTP mock not activated (C30)
+
+`responses.add()` or `httpretty.register_uri()` registers a mock response, but the HTTP interceptor is never activated (`@responses.activate`, `with responses.RequestsMock()`, or `@httpretty.activate`). Without activation the mock is registered but HTTP calls bypass it and reach the real network. The test passes only when the real server is up and returns the expected data.
+
+## capsys result never asserted (C31)
+
+`capsys.readouterr()` is called but its return value is never asserted. The test captures stdout/stderr, but nothing verifies the content. The capture has no effect on pass/fail — the test passes whether the output is correct or empty.
+
+```python
+# Lying: captured is assigned but never checked
+def test_output(capsys):
+    print_report()
+    captured = capsys.readouterr()
+```
+
+Check the captured content:
+
+```python
+def test_output(capsys):
+    print_report()
+    captured = capsys.readouterr()
+    assert "PASS" in captured.out
+```
+
+## skip without reason (C32)
+
+`@pytest.mark.skip` with no `reason=` argument. There is no record of why the test was skipped, when it should be re-enabled, or whether the skip was intentional. A permanently skipped test looks the same as a temporarily skipped one.
+
+Always add `reason="<why>"`. If there is no good reason, remove the skip.
+
+## ML metric computed but not asserted (C33)
+
+Calling `model.score()`, `accuracy_score()`, `f1_score()`, or any other sklearn metric function without asserting on the return value. The test passes regardless of actual model performance — a model with 10% accuracy is treated the same as one with 95%.
+
+```python
+# Lying: score is computed and discarded
+def test_model():
+    model.fit(X_train, y_train)
+    model.score(X_test, y_test)   # result thrown away
+    assert model is not None
+```
+
+Assert that the metric meets a minimum threshold:
+
+```python
+def test_model():
+    model.fit(X_train, y_train)
+    acc = model.score(X_test, y_test)
+    assert acc >= 0.80
+```
+
+## Suboptimal assert form (C34)
+
+Python and pytest provide clearer, more idiomatic alternatives to some common patterns. The alternatives produce better failure messages and signal intent more directly.
+
+| Avoid | Prefer |
+|---|---|
+| `assert not x in y` | `assert x not in y` |
+| `assert len(x) == 0` | `assert not x` |
+| `assert x == True` | `assert x` |
+| `assert x == False` | `assert not x` |
+| `assert x == None` | `assert x is None` |
+| `assert x != None` | `assert x is not None` |
+
+## Retry decorator masks flakiness (C35)
+
+`@pytest.mark.flaky`, `@pytest.mark.repeat`, or `@pytest.mark.retry` on a test makes it pass on the Nth attempt. The test reports green by chance, hiding a non-deterministic SUT instead of surfacing the root cause. Remove the decorator and fix the flakiness: isolate the random factor, remove the test-order dependency, or mock the external service.
+
+## pytest.fail without a reason (C36)
+
+`pytest.fail()` with no message. The build log shows a failure with no explanation of what invariant was violated. Pass a descriptive string: `pytest.fail("expected status to be DONE, got PENDING")`.
+
+## Duplicate parametrize case (C37)
+
+The same argument set appears more than once in a `@pytest.mark.parametrize` list: `parametrize("x", [1, 2, 1])`. The repeated case runs the exact same scenario twice, adding CI time without adding coverage.
+
+---
+
+# Opt-in diagnostic codes
+
+The codes below surface smells that do not make a test a false positive but reduce observability and maintainability. They are disabled by default. Enable with `CODE = "info"` in `[tool.falsegreen.severity]`.
+
+## D1. Assertion Roulette
+
+Two or more assertions in one test, all without a `msg` argument. When the test fails, pytest shows the failure for one assertion but cannot tell you which one triggered it without re-running or reading the traceback line numbers.
+
+Add a message to each assertion: `assert result == expected, f"expected {expected}, got {result}"`. Or split the test into one assertion per test function.
+
+## D3. Duplicate Assert
+
+The same assertion appears twice in the same test body. The duplicate adds no coverage and suggests the test was edited carelessly.
+
+## D4. Unnamed Parametrize
+
+`@pytest.mark.parametrize` with three or more cases and no `ids=` argument. Without ids, pytest names each case `test_foo[0]`, `test_foo[1]`, etc. When one fails, you cannot tell from the name alone which scenario failed.
+
+Add `ids=["name1", "name2", ...]` or a callable. Short, descriptive ids make failures immediately readable in CI output.
+
+## D5. Too many inline setup statements
+
+More than five assignments and bare function calls before the first `assert` in a test body. When a test arranges everything in its own body rather than delegating to a fixture, the "arrange" phase buries the "act" and "assert" phases and makes the test hard to read and maintain.
+
+Move the shared setup into a pytest fixture or a helper function. Threshold is configurable with `inline_setup_threshold` in the project config.
+
+## D6. Debug print
+
+A `print()` call in a test body. Print statements left after debugging pass CI noise through without checking anything. Remove them or replace with an assertion.
+
+## M2. Long test method
+
+The test body exceeds `long_test_threshold` lines (default 50). A very long test almost always does more than one thing, which makes failures hard to pinpoint and refactoring costly. Split it into focused tests, each with one clear scenario.
+
+---
+
 # Before you trust the green
 
 ## What not to use in a unit test
@@ -556,6 +792,22 @@ If one of your tests lands on one of these lines, it probably does not protect w
 | a result that depends on time, chance, or a pause | passes or fails by luck | freeze time and seed, wait on a condition |
 | `skip` to hide a real error | sweeps the defect under the rug | skip only on a declared environment condition |
 | expected value that contradicts the business rule | freezes the bug as if it were correct | take the expected from the rule, not the run |
+| commented-out `assert` | check silently disabled | fix the test or delete the assertion |
+| `str(x) == "..."` or `repr(x) == "..."` | checks formatting, not value | check the attribute directly |
+| `pytest.raises` block with multiple calls | first line may raise; target never reached | one call per `raises` block |
+| `async def test_*` that never `await`s the unit | the assertion runs on a coroutine, not a result | `await` the call |
+| literal hard-coded file path | binds test to one layout, often a credential | use `tmp_path` or a relative fixture path |
+| `@pytest.mark.xfail` without `strict=True` | fixed bugs silently stay marked as expected failures | add `strict=True` |
+| `try/except/pass` instead of `pytest.raises` | passes whether the exception is raised or not | use `with pytest.raises(E, match=...)` |
+| `pytest.raises` binding never read after the block | exception type checked, message/args not | read `exc.value` or use `match=` |
+| `os.environ["KEY"] = ...` in a test | env mutation leaks between tests | use `monkeypatch.setenv()` |
+| HTTP mock without activating the interceptor | mock registered but calls reach the real network | activate `@responses.activate` or equivalent |
+| `capsys.readouterr()` result never asserted | capture has no effect on pass/fail | assert on `captured.out` / `captured.err` |
+| `@pytest.mark.skip` without `reason=` | no record of why or when to re-enable | always add `reason="..."` |
+| ML metric computed but not asserted | any accuracy passes the test | assert a minimum threshold |
+| retry decorator on a flaky test | masks the root cause, passes by luck | fix the flakiness; remove the decorator |
+| `pytest.fail()` with no message | build log shows failure with no explanation | add a descriptive reason string |
+| duplicate values in `parametrize` | same scenario runs twice with no extra coverage | remove the duplicate case |
 
 ## Four checks that catch the rest
 
