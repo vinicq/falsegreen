@@ -2449,3 +2449,38 @@ def test_d5_off_by_default(tmp_path):
             assert result > 0
     """))
     assert "D5" not in {a.code for a in run([f])}
+
+
+# ---------------------------------------------------------------------------
+# D6: print() in test body (off by default)
+# ---------------------------------------------------------------------------
+
+def test_d6_print_fires(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD6 = "info"\n')
+    f = _write(tmp_path / "test_d6a.py", textwrap.dedent("""
+        def test_value():
+            result = compute()
+            print(result)
+            assert result == 42
+    """))
+    assert "D6" in {a.code for a in run([f], config_path=cfg)}
+
+
+def test_d6_no_print_clean(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD6 = "info"\n')
+    f = _write(tmp_path / "test_d6b.py", textwrap.dedent("""
+        def test_value():
+            result = compute()
+            assert result == 42
+    """))
+    assert "D6" not in {a.code for a in run([f], config_path=cfg)}
+
+
+def test_d6_off_by_default(tmp_path):
+    f = _write(tmp_path / "test_d6c.py", textwrap.dedent("""
+        def test_value():
+            result = compute()
+            print(result)
+            assert result == 42
+    """))
+    assert "D6" not in {a.code for a in run([f])}

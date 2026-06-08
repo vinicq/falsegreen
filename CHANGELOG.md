@@ -7,6 +7,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- D6 (off by default, `info` severity): `print()` call in test body — debug
+  artifact that bypasses the test oracle. Print statements left after debugging
+  produce CI noise but check nothing; remove or replace with an assertion.
+  Enable with `D6 = "info"` in `[tool.falsegreen.severity]`. Only bare
+  `print(...)` is flagged; `logging.info()` and similar are not.
 - D5 (off by default, `info` severity): test body has too many inline setup
   statements before the first assert. When a test arranges its objects and
   transforms its data directly rather than delegating to a fixture, the act

@@ -105,6 +105,7 @@ CASES = {
     "D3":  ("identical assertion repeated in the same test (duplicate assert)", "off", "J4"),
     "D4":  ("@pytest.mark.parametrize without ids= — failing case identified only by index", "off", "J4"),
     "D5":  ("too many inline setup statements before first assert — consider extracting a fixture", "off", "J5"),
+    "D6":  ("print() in test body — debug artifact that bypasses the test oracle", "off", "J4"),
     # --- coupling group (fragility / maintainability; default off) ------------
     "M2":  ("test method body exceeds the configured line-count threshold", "off", "J5"),
 }
@@ -1565,6 +1566,15 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             if n_lines > long_test_threshold:
                 findings.append(Finding(file, line, "M2",
                                         "%d lines (threshold: %d)" % (n_lines, long_test_threshold)))
+
+    # D6: print() calls in a test body. Print statements left after debugging
+    # bypass the test oracle: they produce output but check nothing, and pollute
+    # CI logs. Off by default; enable with D6 = "info" in severity config.
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call) \
+                and dotted_name(n.value.func) == "print":
+            findings.append(Finding(file, n.lineno, "D6",
+                                    "remove print() or replace with a proper assertion"))
 
     # D5: too many inline setup statements before the first assert. A test that
     # creates objects and transforms data directly in its body, rather than
