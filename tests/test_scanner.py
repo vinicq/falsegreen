@@ -1653,7 +1653,7 @@ def test_m2_info_does_not_affect_exit_code(tmp_path):
                  'long_test_threshold = 2\n[severity]\nM2 = "info"\n')
     body = "\n".join("    x_%d = %d" % (i, i) for i in range(3))
     f = _write(tmp_path / "test_m2.py",
-               "def test_long():\n" + body + "\n    assert True\n")
+               "def test_long():\n" + body + "\n    assert x_0 == 0\n")
     assert main([f, "--config", cfg]) == 0
 
 
