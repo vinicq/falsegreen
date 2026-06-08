@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-08
+
+### Fixed
+- C2 (HIGH) no longer flags an empty body under sympy's `@SKIP` decorator
+  (`from sympy.testing.pytest import SKIP`), which raises `Skipped` at runtime —
+  same semantics as `@pytest.mark.skip`. Found validating sympy.
+
 ## [0.2.0] - 2026-06-05
 
 ### Fixed
@@ -83,6 +90,7 @@ First release.
   false positives: C6 on called boolean predicates, C1 on literal-collection
   loops, and C7 on `f() is f()` (the lru_cache / singleton identity test).
 
-[Unreleased]: https://github.com/vinicq/falsegreen/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/vinicq/falsegreen/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/vinicq/falsegreen/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/vinicq/falsegreen/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/vinicq/falsegreen/releases/tag/v0.1.0

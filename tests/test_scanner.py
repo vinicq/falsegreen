@@ -72,6 +72,19 @@ def test_skip_decorated_empty_test_is_not_c2(tmp_path):
     assert "C2" not in out
 
 
+def test_sympy_SKIP_decorator_not_c2(tmp_path):
+    # sympy defines its own uppercase SKIP decorator (sympy.testing.pytest.SKIP)
+    # that wraps the test to raise Skipped — same semantics as @pytest.mark.skip.
+    # Empty bodies under @SKIP("abstract class") are deliberate placeholders.
+    out = scan_source(tmp_path, """
+        from sympy.testing.pytest import SKIP
+        @SKIP("abstract class")
+        def test_abstract_thing():
+            pass
+    """)
+    assert "C2" not in out
+
+
 def test_class_level_skip_exempts_empty_methods(tmp_path):
     # a class-level @mark.skip makes every empty method a placeholder (paramiko
     # TestCanonicalizationOfCNAMEs). No C2 on the methods.
