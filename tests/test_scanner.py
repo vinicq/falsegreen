@@ -974,7 +974,10 @@ def test_falsegreen_toml_takes_precedence_over_pyproject(tmp_path):
 
 def test_no_config_is_a_noop(tmp_path):
     conf = load_config(start=str(tmp_path))
-    assert conf == {"disable": set(), "exclude": [], "severity": {}}
+    assert conf["disable"] == set()
+    assert conf["exclude"] == []
+    assert conf["severity"] == {}
+    assert conf["long_test_threshold"] == 50
 
 
 def test_invalid_severity_is_ignored_not_fatal(tmp_path):
@@ -1221,7 +1224,7 @@ def test_every_case_has_a_known_judgment(tmp_path):
     from falsegreen.scanner import CASES, JUDGMENTS
     entries = list(CASES.values())
     assert all(len(e) == 3 for e in entries)            # (title, confidence, judgment)
-    assert all(e[1] in ("high", "low", "off") for e in entries)
+    assert all(e[1] in ("high", "low", "info", "off") for e in entries)
     assert all(e[2] in JUDGMENTS for e in entries)
 
 
@@ -1510,3 +1513,173 @@ def test_c23_clean_when_open_receives_attribute(tmp_path):
             assert data
     """)
     assert "C23" not in codes
+
+
+# --- D1: assertion roulette (diagnostic group, off by default) ---------------
+
+def test_d1_flags_multiple_asserts_without_messages(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD1 = "info"\n')
+    f = _write(tmp_path / "test_d1.py", textwrap.dedent("""
+        def test_order():
+            assert subtotal() == 30
+            assert discount() == 3
+            assert total() == 27
+    """))
+    codes = {a.code for a in run([f], config_path=cfg)}
+    assert "D1" in codes
+
+
+def test_d1_is_off_by_default(tmp_path):
+    f = _write(tmp_path / "test_d1.py", textwrap.dedent("""
+        def test_order():
+            assert subtotal() == 30
+            assert discount() == 3
+    """))
+    assert "D1" not in {a.code for a in run([f])}
+
+
+def test_d1_clean_for_single_assert(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD1 = "info"\n')
+    f = _write(tmp_path / "test_d1.py", textwrap.dedent("""
+        def test_x():
+            assert compute() == 42
+    """))
+    assert "D1" not in {a.code for a in run([f], config_path=cfg)}
+
+
+def test_d1_clean_when_all_have_messages(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD1 = "info"\n')
+    f = _write(tmp_path / "test_d1.py", textwrap.dedent("""
+        def test_order():
+            assert subtotal() == 30, "subtotal wrong"
+            assert total() == 27, "total wrong"
+    """))
+    assert "D1" not in {a.code for a in run([f], config_path=cfg)}
+
+
+def test_d1_clean_when_at_least_one_has_message(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD1 = "info"\n')
+    f = _write(tmp_path / "test_d1.py", textwrap.dedent("""
+        def test_order():
+            assert subtotal() == 30
+            assert total() == 27, "total wrong"
+    """))
+    assert "D1" not in {a.code for a in run([f], config_path=cfg)}
+
+
+def test_d1_info_does_not_affect_exit_code(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD1 = "info"\n')
+    f = _write(tmp_path / "test_d1.py", textwrap.dedent("""
+        def test_order():
+            assert subtotal() == 30
+            assert total() == 27
+    """))
+    findings = run([f], config_path=cfg)
+    assert any(a.code == "D1" for a in findings)
+    assert not any(a.conf in ("high", "low") for a in findings)
+    assert main([f, "--config", cfg]) == 0
+
+
+# --- D3: duplicate assert (diagnostic group, off by default) -----------------
+
+def test_d3_flags_repeated_assertion(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD3 = "info"\n')
+    f = _write(tmp_path / "test_d3.py", textwrap.dedent("""
+        def test_user():
+            user = create_user("alice")
+            assert user.email == "alice@example.com"
+            assert user.is_active is True
+            assert user.email == "alice@example.com"
+    """))
+    codes = {a.code for a in run([f], config_path=cfg)}
+    assert "D3" in codes
+
+
+def test_d3_is_off_by_default(tmp_path):
+    f = _write(tmp_path / "test_d3.py", textwrap.dedent("""
+        def test_user():
+            assert compute() == 1
+            assert compute() == 1
+    """))
+    assert "D3" not in {a.code for a in run([f])}
+
+
+def test_d3_clean_for_distinct_assertions(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD3 = "info"\n')
+    f = _write(tmp_path / "test_d3.py", textwrap.dedent("""
+        def test_x():
+            assert a() == 1
+            assert b() == 2
+    """))
+    assert "D3" not in {a.code for a in run([f], config_path=cfg)}
+
+
+# --- M2: long test method (coupling group, off by default) -------------------
+
+def test_m2_flags_long_test(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml",
+                 'long_test_threshold = 5\n[severity]\nM2 = "info"\n')
+    body = "\n".join("    x_%d = %d" % (i, i) for i in range(6))
+    f = _write(tmp_path / "test_m2.py",
+               "def test_long():\n" + body + "\n    assert x_0 == 0\n")
+    codes = {a.code for a in run([f], config_path=cfg)}
+    assert "M2" in codes
+
+
+def test_m2_clean_within_threshold(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml",
+                 'long_test_threshold = 50\n[severity]\nM2 = "info"\n')
+    f = _write(tmp_path / "test_m2.py", textwrap.dedent("""
+        def test_short():
+            result = compute()
+            assert result == 42
+    """))
+    assert "M2" not in {a.code for a in run([f], config_path=cfg)}
+
+
+def test_m2_is_off_by_default(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", 'long_test_threshold = 1\n')
+    f = _write(tmp_path / "test_m2.py", textwrap.dedent("""
+        def test_x():
+            assert a() == 1
+            assert b() == 2
+            assert c() == 3
+    """))
+    assert "M2" not in {a.code for a in run([f], config_path=cfg)}
+
+
+def test_m2_info_does_not_affect_exit_code(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml",
+                 'long_test_threshold = 2\n[severity]\nM2 = "info"\n')
+    body = "\n".join("    x_%d = %d" % (i, i) for i in range(3))
+    f = _write(tmp_path / "test_m2.py",
+               "def test_long():\n" + body + "\n    assert True\n")
+    assert main([f, "--config", cfg]) == 0
+
+
+# --- render_text: info section appears only when enabled ---------------------
+
+def test_render_text_shows_diagnostic_section(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD1 = "info"\n')
+    f = _write(tmp_path / "test_rt.py", textwrap.dedent("""
+        def test_x():
+            assert a() == 1
+            assert b() == 2
+    """))
+    findings = run([f], config_path=cfg)
+    from falsegreen.scanner import render_text
+    out = render_text(findings)
+    assert "DIAGNOSTIC" in out
+    assert "D1" in out
+
+
+def test_render_text_no_diagnostic_section_when_disabled(tmp_path):
+    f = _write(tmp_path / "test_rt.py", textwrap.dedent("""
+        def test_x():
+            assert a() == 1
+            assert b() == 2
+    """))
+    findings = run([f])
+    from falsegreen.scanner import render_text
+    out = render_text(findings)
+    assert "DIAGNOSTIC" not in out

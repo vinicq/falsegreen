@@ -91,7 +91,21 @@ CASES = {
     "C22": ("async test asserts but never awaits the unit (vacuous pass)", "off", "J1"),
     "C23": ("opens a real file at a literal path (mystery guest)", "low", "J6"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
+    # --- diagnostic group (readability / observability; default off) ----------
+    "D1":  ("multiple assertions without messages (assertion roulette)", "off", "J4"),
+    "D3":  ("identical assertion repeated in the same test (duplicate assert)", "off", "J4"),
+    # --- coupling group (fragility / maintainability; default off) ------------
+    "M2":  ("test method body exceeds the configured line-count threshold", "off", "J5"),
 }
+
+def group_of(code):
+    """Smell category inferred from code prefix: 'false-positive' | 'diagnostic' | 'coupling'."""
+    if code.startswith("D"):
+        return "diagnostic"
+    if code.startswith("M"):
+        return "coupling"
+    return "false-positive"
+
 
 # Real mock API assertion methods.
 MOCK_ASSERTS_VALID = {
@@ -139,8 +153,8 @@ IGNORE_RE = re.compile(r"#\s*falsegreen:\s*ignore(?:\[([A-Za-z0-9, ]+)\])?")
 # ---------------------------------------------------------------------------
 # Config file ([tool.falsegreen] in pyproject.toml, or .falsegreen.toml)
 # ---------------------------------------------------------------------------
-SEVERITY_VALUES = {"high", "low", "off"}
-EMPTY_CONFIG = {"disable": set(), "exclude": [], "severity": {}}
+SEVERITY_VALUES = {"high", "low", "info", "off"}
+EMPTY_CONFIG = {"disable": set(), "exclude": [], "severity": {}, "long_test_threshold": 50}
 
 
 def _read_toml(path):
@@ -156,7 +170,7 @@ def _read_toml(path):
 def _normalize_config(data):
     """Validate a raw [tool.falsegreen] mapping into the internal config shape."""
     if not data:
-        return {"disable": set(), "exclude": [], "severity": {}}
+        return {"disable": set(), "exclude": [], "severity": {}, "long_test_threshold": 50}
     disable = {str(c) for c in (data.get("disable") or [])}
     exclude = [str(g) for g in (data.get("exclude") or [])]
     severity = {}
@@ -165,9 +179,19 @@ def _normalize_config(data):
             severity[code] = level.lower()
         else:
             sys.stderr.write(
-                "falsegreen: ignoring invalid severity %r for %s (use high|low|off)\n"
+                "falsegreen: ignoring invalid severity %r for %s (use high|low|info|off)\n"
                 % (level, code))
-    return {"disable": disable, "exclude": exclude, "severity": severity}
+    long_test_threshold = 50
+    raw_thresh = data.get("long_test_threshold")
+    if raw_thresh is not None:
+        try:
+            long_test_threshold = int(raw_thresh)
+        except (ValueError, TypeError):
+            sys.stderr.write(
+                "falsegreen: ignoring invalid long_test_threshold %r (must be an integer)\n"
+                % raw_thresh)
+    return {"disable": disable, "exclude": exclude, "severity": severity,
+            "long_test_threshold": long_test_threshold}
 
 
 def load_config(start=None, explicit=None):
@@ -1082,7 +1106,7 @@ def looks_like_forgotten_nested_test(func, scope):
 
 
 def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
-                     file_layer="logic", controls_time=False):
+                     file_layer="logic", controls_time=False, long_test_threshold=50):
     line = func.lineno
     mock_names = gather_mock_names(func)
     ctx = detect_test_context(func, file_layer)
@@ -1263,6 +1287,34 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                     and isinstance(val_call.args[0].value, str):
                 findings.append(Finding(file, n.lineno, "C23"))
 
+    # D1: 2+ assertions with no message — when the test fails you cannot tell
+    # which assertion triggered it (Assertion Roulette). Function-level smell.
+    # D3: same assertion written twice — the duplicate adds no coverage.
+    _asserts = [n for n in children_no_nesting(func) if isinstance(n, ast.Assert)]
+    if len(_asserts) >= 2 and all(n.msg is None for n in _asserts):
+        findings.append(Finding(file, line, "D1", "%d assertions" % len(_asserts)))
+    _seen_dumps = {}
+    for n in _asserts:
+        try:
+            dump = ast.dump(n.test)
+        except Exception:
+            continue
+        if dump in _seen_dumps:
+            findings.append(Finding(file, n.lineno, "D3"))
+        else:
+            _seen_dumps[dump] = n.lineno
+
+    # M2: test function body exceeds the configured line-count threshold.
+    # A very long test almost always does more than one thing, which makes
+    # failures hard to pinpoint and refactoring costly.
+    if long_test_threshold > 0:
+        end = getattr(func, "end_lineno", None)
+        if end is not None:
+            n_lines = end - func.lineno + 1
+            if n_lines > long_test_threshold:
+                findings.append(Finding(file, line, "M2",
+                                        "%d lines (threshold: %d)" % (n_lines, long_test_threshold)))
+
 
 # ---------------------------------------------------------------------------
 # Per-file analysis
@@ -1351,7 +1403,7 @@ def parse_inline_ignores(source):
     return ignores
 
 
-def analyze_file(file):
+def analyze_file(file, long_test_threshold=50):
     findings = []
     try:
         with open(file, "r", encoding="utf-8") as fh:
@@ -1375,7 +1427,8 @@ def analyze_file(file):
             # empty/weak body is not a false-green test.
             if node.name.startswith("test") and collected:
                 analyze_function(node, file, findings, file_layer=layer,
-                                 controls_time=time_controlled)
+                                 controls_time=time_controlled,
+                                 long_test_threshold=long_test_threshold)
             elif is_pytest_test_file(file) and looks_like_loose_test(node) \
                     and not has_fixture_decorator(node) \
                     and not is_web_route_handler(node) \
@@ -1400,7 +1453,8 @@ def analyze_file(file):
                             analyze_function(m, file, findings, in_class=True,
                                              skip_exempt=class_skipped,
                                              file_layer=layer,
-                                             controls_time=time_controlled)
+                                             controls_time=time_controlled,
+                                             long_test_threshold=long_test_threshold)
 
     for i, line in enumerate(source.splitlines(), start=1):
         if re.match(r"^\s*#\s*assert\b", line):
@@ -1437,6 +1491,8 @@ def render_text(findings):
         return "No false-positive patterns found in the analyzed tests."
     highs = [a for a in findings if a.conf == "high"]
     lows = [a for a in findings if a.conf == "low"]
+    diags = [a for a in findings if a.conf == "info" and group_of(a.code) == "diagnostic"]
+    coups = [a for a in findings if a.conf == "info" and group_of(a.code) == "coupling"]
     out = []
 
     def block(title, items):
@@ -1451,9 +1507,16 @@ def render_text(findings):
 
     block("HIGH confidence (almost certainly a false positive)", highs)
     block("LOW confidence (test smell, confirm by hand or with /falsegreen)", lows)
-    out.append("\nSummary: %d high, %d low." % (len(highs), len(lows)))
-    out.append("Cases 12 and 18 (copied logic / wrong expected value) need the semantic")
-    out.append("pass: run /falsegreen so the expected value is checked against intent.")
+    block("DIAGNOSTIC (readability — informational, exit 0)", diags)
+    block("COUPLING (fragility — informational, exit 0)", coups)
+    n_diag, n_coup = len(diags), len(coups)
+    summary = "\nSummary: %d high, %d low" % (len(highs), len(lows))
+    if n_diag or n_coup:
+        summary += ", %d diagnostic, %d coupling" % (n_diag, n_coup)
+    out.append(summary + ".")
+    if highs or lows:
+        out.append("Cases 12 and 18 (copied logic / wrong expected value) need the semantic")
+        out.append("pass: run /falsegreen so the expected value is checked against intent.")
     return "\n".join(out)
 
 
@@ -1466,7 +1529,11 @@ def render_json(findings):
 
 
 def _sarif_level(conf):
-    return "error" if conf == "high" else "warning"
+    if conf == "high":
+        return "error"
+    if conf == "low":
+        return "warning"
+    return "note"
 
 
 def render_sarif(findings):
@@ -1519,12 +1586,12 @@ def render_sarif(findings):
 
 
 def render_junit(findings):
-    """JUnit XML: HIGH -> <failure>, LOW -> <skipped>. One case per finding."""
+    """JUnit XML: HIGH -> <failure>, LOW/INFO -> <skipped>. One case per finding."""
     n = len(findings)
     n_high = sum(1 for a in findings if a.conf == "high")
-    n_low = n - n_high
+    n_non_high = n - n_high
     attrs = {"name": "falsegreen", "tests": str(n),
-             "failures": str(n_high), "skipped": str(n_low), "errors": "0"}
+             "failures": str(n_high), "skipped": str(n_non_high), "errors": "0"}
     suites = ET.Element("testsuites", attrs)
     suite = ET.SubElement(suites, "testsuite", attrs)
     for a in sorted(findings, key=lambda x: (x.file, x.line)):
@@ -1545,7 +1612,8 @@ def render_junit(findings):
 
 def summary_line(findings, n_files):
     n_high = sum(1 for a in findings if a.conf == "high")
-    n_low = len(findings) - n_high
+    n_low = sum(1 for a in findings if a.conf == "low")
+    n_info = sum(1 for a in findings if a.conf == "info")
     by_code = {}
     by_judgment = {}
     for a in findings:
@@ -1553,8 +1621,11 @@ def summary_line(findings, n_files):
         j = CASES[a.code][2]
         by_judgment[j] = by_judgment.get(j, 0) + 1
     breakdown = " ".join("%s:%d" % (c, by_code[c]) for c in sorted(by_code))
-    line = "falsegreen: scanned %d test file(s), %d finding(s) [%d high, %d low]" % (
+    line = "falsegreen: scanned %d test file(s), %d finding(s) [%d high, %d low" % (
         n_files, len(findings), n_high, n_low)
+    if n_info:
+        line += ", %d info" % n_info
+    line += "]"
     out = line + ("  " + breakdown if breakdown else "")
     if by_judgment:
         out += "\n  by judgment: " + " ".join(
@@ -1616,10 +1687,11 @@ def run(paths, staged=False, disable=None, config=None, config_path=None,
     if stats is not None:
         stats["files"] = len(files)
 
+    thresh = config.get("long_test_threshold", 50)
     findings = []
     seen = set()
     for f in files:
-        for a in analyze_file(f):
+        for a in analyze_file(f, long_test_threshold=thresh):
             conf = effective_conf(a.code, config, cli_disable)
             if conf == "off":
                 continue
