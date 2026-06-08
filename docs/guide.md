@@ -13,8 +13,7 @@ trust broken code and ship it to production.
 
 This document collects the most common ways to build one of these lying
 inspectors, explains each with a real-world example, shows why it fools you, and
-teaches you how to confirm a test is worth keeping. At the end there is a summary
-of what not to use and four checks that catch whatever slips through.
+teaches you how to confirm a test is worth keeping.
 
 ## The rule that holds for every case
 
@@ -535,8 +534,7 @@ accountable, never to copy what it already does.
 
 ## What not to use in a unit test
 
-A summary of what is scattered through this document. If one of your tests lands on
-one of these lines, it probably does not protect what you think it protects.
+If one of your tests lands on one of these lines, it probably does not protect what you think it protects.
 
 | Do not use | Why it fools you | Do this instead |
 |---|---|---|
