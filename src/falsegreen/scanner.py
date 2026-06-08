@@ -55,8 +55,8 @@ except ImportError:  # pragma: no cover - depends on interpreter version
 # Case catalog (mirrors the guide). code -> (title, confidence, judgment)
 # confidence: "high" => blocks the commit; "low" => warns only.
 # judgment: which of the semantic pass's questions the code belongs to (J1-J6,
-# see SKILL.md). Lets output/SARIF/docs group findings by category without
-# splitting the flat module (the CI drift guard is a byte-for-byte file diff).
+# see falsegreen-skill). Lets output/SARIF/docs group findings by category without
+# splitting the flat module.
 # ---------------------------------------------------------------------------
 JUDGMENTS = {
     "J1": "does the assertion actually run?",

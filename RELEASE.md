@@ -35,7 +35,7 @@ Optionally add a tag-only deployment branch policy and a required reviewer
 ## Publishing a version
 
 1. Bump the version in `pyproject.toml`, `src/falsegreen/scanner.py`
-   (`__version__`), and `.claude-plugin/plugin.json` in lockstep. Move the
+   (`__version__`), and `src/falsegreen/__init__.py` in lockstep. Move the
    CHANGELOG `[Unreleased]` entries under the new version with the date.
 2. Tag and push: `git tag -a vX.Y.Z -m "falsegreen vX.Y.Z" && git push origin vX.Y.Z`.
 3. Create the GitHub release: `gh release create vX.Y.Z` (from the CHANGELOG).

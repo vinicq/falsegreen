@@ -9,7 +9,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.2.2] - 2026-06-08
 
 ### Changed
-- Skill and Claude plugin removed from this repo — the LLM semantic pass, the
+- Skill and Claude plugin removed from this repo: the LLM semantic pass, the
   detection reference, and multi-language support now live in
   [falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
 - README, CONTRIBUTING, and CREDITS updated to reflect the split.

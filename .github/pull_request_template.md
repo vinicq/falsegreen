@@ -26,12 +26,11 @@ Valid types: feat / fix / docs / refactor / test / chore / ci. Examples:
 - [ ] `pytest -q`
 - [ ] `python -m falsegreen src tests` (the tool must stay clean on itself)
 - [ ] `ruff check src tests`
-- [ ] `diff src/falsegreen/scanner.py skills/falsegreen/scripts/scan.py` (identical)
 
 ## Checklist
 
-- [ ] A new/changed detection rule touches all four places: scanner logic,
-      `reference.md`, `docs/guide.md` (if a new case), and `tests/`.
+- [ ] A new/changed detection rule touches all three places: scanner logic,
+      `docs/guide.md` (if a new case), and `tests/`.
 - [ ] For a new rule: a test proves it fires on the bad pattern AND a test proves
       it does NOT fire on the legitimate look-alike.
 - [ ] HIGH-confidence codes were stress-tested against legitimate look-alikes

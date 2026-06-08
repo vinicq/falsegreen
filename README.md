@@ -18,8 +18,8 @@ each test against more than twenty mechanical smells, the ones a parser can prov
 an assertion that never runs, a check that is empty or always true, a swallowed
 exception, a mock of the unit under test, an assertion stranded in dead code, a
 weak truthiness check, an async test that never awaits. High-confidence findings
-block the commit; the rest warn. The semantic layer — judging whether each test
-asserts the *right* value against intended behavior — lives in
+block the commit; the rest warn. The semantic layer (judging whether each test
+asserts the right value against intended behavior) lives in
 [falsegreen-skill](https://github.com/vinicq/falsegreen-skill), the companion
 LLM-based tool that covers Python and other languages.
 
@@ -255,8 +255,8 @@ that maintainability layer well; run them alongside falsegreen.
 
 The scanner is the fast, deterministic pre-filter. It overlaps in part with
 `ruff`'s `PT` rules and with research tools like PyNose, and that overlap is fine:
-run them together. For the semantic layer — and for TypeScript, JavaScript, Java,
-and other languages — use [falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
+run them together. For TypeScript, JavaScript, Java, and other languages, use
+[falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
 
 ---
 
@@ -429,7 +429,7 @@ live in [falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
 ## Contributing, security, license
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) - dev setup, how to add a detection rule
-  (the four places it touches), the false-positive policy, Conventional Commits.
+  (the three places it touches), the false-positive policy, Conventional Commits.
 - [SECURITY.md](SECURITY.md) - how to report a vulnerability privately.
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) - Contributor Covenant 2.1.
 - [CREDITS.md](CREDITS.md) - the research falsegreen builds on (the Soares rotten-
