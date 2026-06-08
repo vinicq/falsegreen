@@ -7,6 +7,23 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- C25 (LOW): `@pytest.mark.xfail` without `strict=True`. When the test unexpectedly
+  passes (XPASS), pytest silently treats it as a success — the bug was fixed but
+  the test is never promoted to a normal passing test. Enable globally with
+  `xfail_strict = true` in `[tool.pytest.ini_options]`, or per-marker with
+  `@pytest.mark.xfail(strict=True)`.
+- C27 (HIGH): `try/except/pass` used as a substitute for `pytest.raises`. A try
+  block that makes calls, has no assertion in its body, and whose only handler
+  silently swallows a specific exception passes whether the exception is raised or
+  not. Replace with `with pytest.raises(ExpectedError):`.
+- C28 (LOW): `with pytest.raises(E) as exc:` where the binding `exc` is never read
+  after the block. The exception type is verified but the message, args, and
+  attributes are not — a wrong exception with the right type passes undetected.
+  Add `assert "expected text" in str(exc.value)` or use `match=`.
+- C29 (LOW): `os.environ["KEY"] = value` (or `os.environ.update` / `os.putenv`)
+  directly in a test. The mutation outlives the test function and leaks to every
+  test that runs after. Use `monkeypatch.setenv()` which restores the original
+  value automatically.
 - C23 (LOW): test opens a real file at a hard-coded literal path — `open("path/to/file")`,
   `Path("literal").read_text()`, or `Path("literal").read_bytes()`. A hard-coded path ties
   the test to a specific directory layout and is often a credential file or a fixture that

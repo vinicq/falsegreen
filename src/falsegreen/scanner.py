@@ -90,6 +90,10 @@ CASES = {
     "C21": ("every assertion is conditional, none runs unconditionally", "low", "J1"),
     "C22": ("async test asserts but never awaits the unit (vacuous pass)", "off", "J1"),
     "C23": ("opens a real file at a literal path (mystery guest)", "low", "J6"),
+    "C25": ("xfail without strict=True silently accepts a fixed bug (XPASS treated as pass)", "low", "J4"),
+    "C27": ("try/except/pass — test passes whether the expected exception is raised or not", "high", "J1"),
+    "C28": ("pytest.raises binding declared but exception content never inspected", "low", "J4"),
+    "C29": ("os.environ assigned directly in a test — env state leaks between tests", "low", "J6"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
     # --- diagnostic group (readability / observability; default off) ----------
     "D1":  ("multiple assertions without messages (assertion roulette)", "off", "J4"),
@@ -1111,6 +1115,13 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
     mock_names = gather_mock_names(func)
     ctx = detect_test_context(func, file_layer)
 
+    # C25: xfail without strict=True — XPASS silently treated as pass, masking a fixed bug.
+    for d in func.decorator_list:
+        if _is_xfail_without_strict(d):
+            findings.append(Finding(file, line, "C25",
+                                    "add strict=True or convert to skip if permanently broken"))
+            break
+
     body_intentionally_empty = (has_property_test_decorator(func)
                                 or has_skip_decorator(func) or skip_exempt)
     if not has_assertion(func) and not body_intentionally_empty:
@@ -1287,6 +1298,63 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                     and isinstance(val_call.args[0].value, str):
                 findings.append(Finding(file, n.lineno, "C23"))
 
+    # C27: try/except/pass — a try block that silently swallows the expected exception
+    # makes the test pass whether the exception was raised or not. Unlike C3 (which fires
+    # when an assert lives inside the try body), C27 fires when the try body has NO
+    # assertion and no sibling statement in the function performs a check either.
+    for n in func.body:
+        if not isinstance(n, ast.Try):
+            continue
+        if block_has_assertion(n.body):
+            continue  # assertion inside try body: C3's territory
+        if not any(isinstance(sub, ast.Call)
+                   for stmt in n.body for sub in ast.walk(stmt)):
+            continue  # nothing exercised in the try body
+        if not any(handler_swallows(h) and h.type is not None for h in n.handlers):
+            continue  # no pass-only handler with a specific exception type
+        if any(_stmt_is_check(s) for s in func.body if s is not n):
+            continue  # a sibling statement performs a real check
+        findings.append(Finding(file, n.lineno, "C27"))
+
+    # C28: pytest.raises with `as NAME` binding that is never read afterwards.
+    # The programmer intended to inspect the exception content but did not —
+    # the exception type is verified but message, args, and attributes are not.
+    for n in children_no_nesting(func):
+        if not isinstance(n, ast.With):
+            continue
+        excinfo_name = None
+        for item in n.items:
+            if is_call_to(item.context_expr, "pytest.raises", "raises") \
+                    and item.optional_vars is not None \
+                    and isinstance(item.optional_vars, ast.Name):
+                excinfo_name = item.optional_vars.id
+                break
+        if excinfo_name is None:
+            continue
+        if any(isinstance(sub, ast.Name) and sub.id == excinfo_name
+               and isinstance(sub.ctx, ast.Load)
+               for sub in ast.walk(func)):
+            continue  # excinfo name is actually read somewhere in the function
+        findings.append(Finding(file, n.lineno, "C28",
+                                "'%s' declared but never read" % excinfo_name))
+
+    # C29: direct os.environ assignment in a test — the mutation outlives the test
+    # and contaminates every test that runs after. Use monkeypatch.setenv() which
+    # saves and restores the original value automatically.
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Assign):
+            for tgt in n.targets:
+                if isinstance(tgt, ast.Subscript) \
+                        and dotted_name(tgt.value) in ("os.environ",):
+                    findings.append(Finding(file, n.lineno, "C29",
+                                            "use monkeypatch.setenv() to auto-restore"))
+        elif isinstance(n, ast.Call):
+            dn = dotted_name(n.func)
+            if dn == "os.environ.update" or dn.endswith(".environ.update") \
+                    or dn in ("os.putenv", "putenv"):
+                findings.append(Finding(file, n.lineno, "C29",
+                                        "use monkeypatch.setenv() to auto-restore"))
+
     # D1: 2+ assertions with no message — when the test fails you cannot tell
     # which assertion triggered it (Assertion Roulette). Function-level smell.
     # D3: same assertion written twice — the duplicate adds no coverage.
@@ -1381,6 +1449,24 @@ def is_pytest_test_file(file):
             or base.endswith("_test.py"))
 
 
+def _is_xfail_without_strict(decorator):
+    """Returns True if the decorator is @pytest.mark.xfail (or any import alias) without
+    strict=True. A non-strict xfail treats XPASS (unexpected pass) as success, masking
+    bugs that were fixed without the test being promoted to a proper passing test."""
+    if isinstance(decorator, ast.Call):
+        target = decorator.func
+        keywords = decorator.keywords
+    else:
+        target = decorator
+        keywords = []
+    if dotted_name(target).split(".")[-1] != "xfail":
+        return False
+    for kw in keywords:
+        if kw.arg == "strict":
+            return not (isinstance(kw.value, ast.Constant) and kw.value.value is True)
+    return True
+
+
 def has_fixture_decorator(func):
     for d in func.decorator_list:
         target = d.func if isinstance(d, ast.Call) else d
@@ -1447,6 +1533,11 @@ def analyze_file(file, long_test_threshold=50):
                 # a class-level skip/xfail marker makes every empty method in it a
                 # deliberate placeholder, not a rotten-green test.
                 class_skipped = has_skip_decorator(node)
+                for d in node.decorator_list:
+                    if _is_xfail_without_strict(d):
+                        findings.append(Finding(file, node.lineno, "C25",
+                                                "class-level xfail: add strict=True"))
+                        break
                 for m in node.body:
                     if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         if m.name.startswith("test"):

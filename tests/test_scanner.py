@@ -1754,3 +1754,220 @@ def test_m2_invalid_threshold_uses_default(tmp_path, capsys):
     assert "M2" not in {a.code for a in run([f], config_path=cfg)}
     captured = capsys.readouterr()
     assert "long_test_threshold" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# C25: xfail without strict=True
+# ---------------------------------------------------------------------------
+
+def test_c25_bare_xfail_fires(tmp_path):
+    f = _write(tmp_path / "test_c25.py", textwrap.dedent("""
+        @pytest.mark.xfail
+        def test_broken():
+            assert compute() == 42
+    """))
+    assert "C25" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c25_xfail_with_reason_fires(tmp_path):
+    f = _write(tmp_path / "test_c25b.py", textwrap.dedent("""
+        @pytest.mark.xfail(reason="known bug")
+        def test_broken():
+            assert compute() == 42
+    """))
+    assert "C25" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c25_xfail_strict_false_fires(tmp_path):
+    f = _write(tmp_path / "test_c25c.py", textwrap.dedent("""
+        @pytest.mark.xfail(strict=False)
+        def test_broken():
+            assert compute() == 42
+    """))
+    assert "C25" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c25_xfail_strict_true_clean(tmp_path):
+    f = _write(tmp_path / "test_c25d.py", textwrap.dedent("""
+        @pytest.mark.xfail(strict=True)
+        def test_broken():
+            assert compute() == 42
+    """))
+    assert "C25" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c25_class_level_fires(tmp_path):
+    f = _write(tmp_path / "test_c25e.py", textwrap.dedent("""
+        @pytest.mark.xfail
+        class TestBroken:
+            def test_one(self):
+                assert compute() == 42
+    """))
+    assert "C25" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c25_exit_code_is_10(tmp_path):
+    f = _write(tmp_path / "test_c25f.py", textwrap.dedent("""
+        @pytest.mark.xfail
+        def test_broken():
+            assert compute() == 42
+    """))
+    assert main([f]) == 10
+
+
+# ---------------------------------------------------------------------------
+# C27: try/except/pass antipattern
+# ---------------------------------------------------------------------------
+
+def test_c27_try_except_pass_fires(tmp_path):
+    f = _write(tmp_path / "test_c27.py", textwrap.dedent("""
+        def test_raises_value_error():
+            try:
+                risky()
+            except ValueError:
+                pass
+    """))
+    assert "C27" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c27_try_except_pass_is_high(tmp_path):
+    f = _write(tmp_path / "test_c27b.py", textwrap.dedent("""
+        def test_raises_value_error():
+            try:
+                risky()
+            except ValueError:
+                pass
+    """))
+    findings = [a for a in analyze_file(str(f)) if a.code == "C27"]
+    assert findings and findings[0].conf == "high"
+
+
+def test_c27_assertion_after_try_clean(tmp_path):
+    f = _write(tmp_path / "test_c27c.py", textwrap.dedent("""
+        def test_no_raise_then_assert():
+            try:
+                result = risky()
+            except ValueError:
+                pass
+            assert result == expected
+    """))
+    assert "C27" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c27_assertion_in_try_body_clean(tmp_path):
+    f = _write(tmp_path / "test_c27d.py", textwrap.dedent("""
+        def test_x():
+            try:
+                result = compute()
+                assert result == 42
+            except ValueError:
+                pass
+    """))
+    assert "C27" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c27_bare_except_fires(tmp_path):
+    f = _write(tmp_path / "test_c27e.py", textwrap.dedent("""
+        def test_something():
+            try:
+                risky()
+            except ValueError:
+                pass
+    """))
+    assert "C27" in {a.code for a in analyze_file(str(f))}
+
+
+# ---------------------------------------------------------------------------
+# C28: pytest.raises binding declared but never read
+# ---------------------------------------------------------------------------
+
+def test_c28_excinfo_declared_not_used_fires(tmp_path):
+    f = _write(tmp_path / "test_c28.py", textwrap.dedent("""
+        def test_raises():
+            with pytest.raises(ValueError) as exc_info:
+                parse("bad")
+    """))
+    assert "C28" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c28_excinfo_used_in_assert_clean(tmp_path):
+    f = _write(tmp_path / "test_c28b.py", textwrap.dedent("""
+        def test_raises():
+            with pytest.raises(ValueError) as exc_info:
+                parse("bad")
+            assert "invalid" in str(exc_info.value)
+    """))
+    assert "C28" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c28_excinfo_used_via_match_clean(tmp_path):
+    f = _write(tmp_path / "test_c28c.py", textwrap.dedent("""
+        def test_raises():
+            with pytest.raises(ValueError) as exc_info:
+                parse("bad")
+            exc_info.match(r"invalid")
+    """))
+    assert "C28" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c28_no_binding_clean(tmp_path):
+    f = _write(tmp_path / "test_c28d.py", textwrap.dedent("""
+        def test_raises():
+            with pytest.raises(ValueError):
+                parse("bad")
+    """))
+    assert "C28" not in {a.code for a in analyze_file(str(f))}
+
+
+# ---------------------------------------------------------------------------
+# C29: os.environ direct assignment
+# ---------------------------------------------------------------------------
+
+def test_c29_direct_assignment_fires(tmp_path):
+    f = _write(tmp_path / "test_c29.py", textwrap.dedent("""
+        def test_config():
+            os.environ["DB_URL"] = "sqlite:///:memory:"
+            result = load_config()
+            assert result.db_url == "sqlite:///:memory:"
+    """))
+    assert "C29" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c29_environ_update_fires(tmp_path):
+    f = _write(tmp_path / "test_c29b.py", textwrap.dedent("""
+        def test_config():
+            os.environ.update({"DB_URL": "sqlite:///:memory:"})
+            result = load_config()
+            assert result.db_url == "sqlite:///:memory:"
+    """))
+    assert "C29" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c29_putenv_fires(tmp_path):
+    f = _write(tmp_path / "test_c29c.py", textwrap.dedent("""
+        def test_config():
+            os.putenv("DB_URL", "sqlite:///:memory:")
+            result = load_config()
+            assert result.db_url == "sqlite:///:memory:"
+    """))
+    assert "C29" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c29_monkeypatch_clean(tmp_path):
+    f = _write(tmp_path / "test_c29d.py", textwrap.dedent("""
+        def test_config(monkeypatch):
+            monkeypatch.setenv("DB_URL", "sqlite:///:memory:")
+            result = load_config()
+            assert result.db_url == "sqlite:///:memory:"
+    """))
+    assert "C29" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c29_is_low_confidence(tmp_path):
+    f = _write(tmp_path / "test_c29e.py", textwrap.dedent("""
+        def test_config():
+            os.environ["KEY"] = "val"
+            assert something() == expected
+    """))
+    findings = [a for a in analyze_file(str(f)) if a.code == "C29"]
+    assert findings and findings[0].conf == "low"
