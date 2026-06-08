@@ -6,6 +6,24 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `freezegun` and `time_machine` imports suppress C16 clock-read findings in the
+  same file (`TIME_CONTROL_IMPORTS` + `file_controls_time()` check): when a file
+  controls time externally, `datetime.now()`/`time.time()` calls inside tests are
+  not non-deterministic.
+- `trio.run` added to the drives-the-loop exemption; C22 no longer fires when a
+  test drives its own async loop via `trio.run`.
+- 14 regression tests covering the changes below.
+
+### Changed
+- `WEB_IMPORT_ROOTS` expanded: `responses`, `httpretty`, `respx`, `aioresponses`,
+  `vcr`, `requests_mock`, `pook`, `pytest_httpserver` are now classified as web
+  layer, so C6/C14 softening applies to HTTP-mock-heavy test files.
+- `BROWSER_IMPORT_ROOTS` expanded: `helium`, `pyppeteer`, `seleniumbase`.
+- `sure` (`.should` attribute access) and `expects`/`ward` (`expect()` call) are
+  now recognized as real assertion calls (`FLUENT_ASSERT_CALLS`); C2/C2b no longer
+  fires on tests that use those fluent libraries.
+
 ## [0.2.2] - 2026-06-08
 
 ### Changed
@@ -18,7 +36,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - C2 (HIGH) no longer flags an empty body under sympy's `@SKIP` decorator
-  (`from sympy.testing.pytest import SKIP`), which raises `Skipped` at runtime —
+  (`from sympy.testing.pytest import SKIP`), which raises `Skipped` at runtime,
   same semantics as `@pytest.mark.skip`. Found validating sympy.
 
 ## [0.2.0] - 2026-06-05

@@ -1,8 +1,8 @@
 # Contributing to falsegreen
 
-Thanks for helping. falsegreen finds unit tests that give false positives. The
-bar for a contribution is simple: the tool itself must not become a false
-positive. A new rule that cries wolf is worse than no rule.
+falsegreen finds unit tests that pass green without protecting anything. The bar
+for a contribution is simple: the tool itself must not become a false positive.
+A new rule that cries wolf is worse than no rule.
 
 ## 30-second cheat sheet
 
@@ -13,6 +13,25 @@ pip install -e ".[dev]"     # runtime has no deps; this adds pytest + ruff
 pytest -q                   # run the test suite
 python -m falsegreen src tests   # the tool must stay clean on itself
 ruff check src tests        # lint
+```
+
+Run a single test file or pattern:
+
+```bash
+pytest tests/test_scanner.py -k C17        # all tests whose name matches C17
+pytest tests/test_scanner.py::test_c17_fires  # exact test
+```
+
+Check the installed scanner version:
+
+```bash
+python -m falsegreen --version
+```
+
+See all findings including LOW-confidence ones:
+
+```bash
+python -m falsegreen tests/ --format text
 ```
 
 Then branch, change, add a test, and open a pull request.
@@ -44,10 +63,10 @@ pull request needs all that apply:
 2. **Guide** entry in `docs/guide.md` if it is a new case, in the same
    real-world-analogy style as the others.
 3. **Tests** in `tests/test_scanner.py`: one test proving the rule fires on the
-   bad pattern, and at least one proving it does NOT fire on the legitimate
-   look-alike. The second test matters more than the first.
+   bad pattern, and at least one proving it stays quiet on the legitimate
+   look-alike.
 
-Then run `pytest` and `python -m falsegreen src tests` (must stay clean).
+4. Run `pytest` and `python -m falsegreen src tests`. Both must exit clean. The self-scan is not optional: a new rule that triggers on the scanner's own code is a false positive by definition.
 
 ### Off-by-default codes
 

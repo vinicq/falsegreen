@@ -36,16 +36,15 @@ Optionally add a tag-only deployment branch policy and a required reviewer
 
 1. Bump the version in `pyproject.toml`, `src/falsegreen/scanner.py`
    (`__version__`), and `src/falsegreen/__init__.py` in lockstep. Move the
-   CHANGELOG `[Unreleased]` entries under the new version with the date.
-2. Tag and push: `git tag -a vX.Y.Z -m "falsegreen vX.Y.Z" && git push origin vX.Y.Z`.
-3. Create the GitHub release: `gh release create vX.Y.Z` (from the CHANGELOG).
-   Publishing the release fires `release.yml`, which builds and uploads to PyPI.
-
-For the existing `v0.1.0` tag (created before this workflow), trigger it manually
-once the two setup steps above are done:
-
-```
-gh workflow run release.yml --ref v0.1.0
-```
+   CHANGELOG `[Unreleased]` entries under the new version with today's date.
+   Update the footer comparison links at the bottom of `CHANGELOG.md`:
+   - `[Unreleased]` line: change `vPREV...HEAD` to `vX.Y.Z...HEAD`
+   - Add `[X.Y.Z]: .../compare/vPREV...vX.Y.Z`
+2. Run the self-scan: `python -m falsegreen src tests`. It must report zero
+   HIGH findings before the tag is created.
+3. Tag and push: `git tag -a vX.Y.Z -m "falsegreen vX.Y.Z" && git push origin vX.Y.Z`.
+4. Create the GitHub release: `gh release create vX.Y.Z --notes-from-tag`
+   (or paste the CHANGELOG section manually). Publishing the release fires
+   `release.yml`, which builds and uploads to PyPI.
 
 Then confirm the version is live: https://pypi.org/project/falsegreen/

@@ -43,7 +43,7 @@ Include in the report:
 - Whether the issue has already been disclosed elsewhere.
 
 If you are not sure whether something counts as a security issue, send the report
-anyway. Better safe than sorry.
+anyway.
 
 ## What to expect
 

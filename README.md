@@ -9,12 +9,12 @@
 finds Python/pytest tests that pass green without protecting anything, and tests
 that pass while asserting the wrong value.
 
-A green test that never fails when the code breaks is worse than no test: it tells
-you a broken program is safe. AI coding assistants produce these in volume. The
+A test that tells you a broken program is safe is worse than no test at all. That
+is what a green test that never fails gives you. AI coding assistants produce these in volume. The
 tool catches them in two layers.
 
 The scanner is a zero-dependency AST pass that runs on every commit. It validates
-each test against more than twenty mechanical smells, the ones a parser can prove:
+each test against twenty-one mechanical codes, the ones a parser can prove:
 an assertion that never runs, a check that is empty or always true, a swallowed
 exception, a mock of the unit under test, an assertion stranded in dead code, a
 weak truthiness check, an async test that never awaits. High-confidence findings
@@ -42,6 +42,7 @@ et al., ICSE 2019) and cross-walked against the published test-smell catalog. Se
 - [Download and use: the three ways](#download-and-use-the-three-ways)
   - [1. As a Python package (CLI)](#1-as-a-python-package-cli)
   - [2. As a pre-commit hook](#2-as-a-pre-commit-hook)
+  - [3. With the semantic pass (multi-language)](#3-with-the-semantic-pass-multi-language)
 - [Configuration](#configuration)
 - [Technologies used](#technologies-used)
 - [How it compares](#how-it-compares)
@@ -180,7 +181,7 @@ by structure. A parser sees a mock but cannot tell whether it replaced an edge
 (network, disk, clock) or the thing under test. It sees an arithmetic expression
 but cannot tell whether the expected value was derived independently or copied
 from the code. That judgment requires reading the production code against an
-independent oracle — that is what
+independent oracle: that is what
 [falsegreen-skill](https://github.com/vinicq/falsegreen-skill) does.
 
 **Why two confidence levels.** A blocking gate that cries wolf gets disabled. So
@@ -299,7 +300,7 @@ This is the standard, version-pinned way to gate every commit. Add to your
 
 ```yaml
   - repo: https://github.com/vinicq/falsegreen
-    rev: v0.1.0
+    rev: v0.2.2
     hooks:
       - id: falsegreen
 ```
@@ -318,8 +319,8 @@ python -m falsegreen.hook_install --uninstall   # remove
 
 ### 3. With the semantic pass (multi-language)
 
-For cases that require reading production intent — mocking the unit under test,
-copying expected from current output, re-implementing the formula — use
+For cases that require reading production intent (mocking the unit under test,
+copying expected from current output, re-implementing the formula), use
 [falsegreen-skill](https://github.com/vinicq/falsegreen-skill). It covers Python,
 TypeScript, JavaScript, Java, and other languages via an LLM-based analysis using
 the same case catalog.

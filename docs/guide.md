@@ -582,6 +582,6 @@ and checks whether any test fails. Each change that slips by unnoticed reveals a
 stretch covered on paper but not actually verified. It is the most honest measure of
 your tests' quality.
 
-In the end, it is worth keeping a single question. Before celebrating a green test,
-ask: is there any way for the code to be wrong and this test to keep passing? If the
-answer is yes, fix the test first.
+One question is enough. Before celebrating a green test, ask: is there any way
+for the code to be wrong and this test to keep passing? If the answer is yes,
+fix the test first.
