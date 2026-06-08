@@ -19,49 +19,35 @@ Then branch, change, add a test, and open a pull request.
 
 ## How the project is built
 
-Two layers, one repo:
+One module, one job: `src/falsegreen/scanner.py` is a zero-dependency AST pass.
+It parses test files, never imports or runs them. Each pattern is a case code
+(`C1`, `C5`, `C13`, ...). HIGH-confidence codes block a commit; LOW only warn.
 
-- **Scanner** (`src/falsegreen/scanner.py`): a zero-dependency AST pass. It parses
-  test files, it never imports or runs them. Each pattern is a case code
-  (`C1`, `C5`, `C13`, ...). HIGH-confidence codes block a commit; LOW only warn.
-- **Skill** (`skills/falsegreen/`): the Claude Code semantic pass. It bundles a
-  byte-identical copy of the scanner at `skills/falsegreen/scripts/scan.py`; CI
-  fails if it drifts from `src/falsegreen/scanner.py`.
-
-The plain-language rubric is `docs/guide.md`; the detection reference is
-`skills/falsegreen/reference.md`.
+The plain-language rubric is `docs/guide.md`. The LLM semantic pass and the
+multi-language detection reference live in
+[falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
 
 ## Filing an issue
 
 A useful bug report for a false positive includes the smallest test snippet that
 gets wrongly flagged, the code falsegreen emitted, and what you expected. For a
-false negative, show the bad test that slipped through. Use the demo file
-`skills/falsegreen/examples/bad_tests_sample.py` as a format reference.
+false negative, show the bad test that slipped through.
 
 ## Adding or changing a detection rule
 
-This is the most common contribution. A rule touches up to five places, and the
+This is the most common contribution. A rule touches up to three places, and the
 pull request needs all that apply:
 
 1. **Logic** in `src/falsegreen/scanner.py`. Decide HIGH vs LOW. The rule of
    thumb: HIGH only if a legitimate test can almost never trigger it, because
    HIGH blocks commits. When in doubt, ship it LOW.
-2. **Reference** entry in `skills/falsegreen/reference.md` (what it looks like,
-   why it fools you, confidence, the tool it maps to).
-3. **Guide** entry in `docs/guide.md` if it is a new case, in the same
+2. **Guide** entry in `docs/guide.md` if it is a new case, in the same
    real-world-analogy style as the others.
-4. **Tests** in `tests/test_scanner.py`: one test proving the rule fires on the
+3. **Tests** in `tests/test_scanner.py`: one test proving the rule fires on the
    bad pattern, and at least one proving it does NOT fire on the legitimate
    look-alike. The second test matters more than the first.
-5. **Skill prose** in `skills/falsegreen/SKILL.md`, *only if* the change alters a
-   confidence level, an exemption, a flag, or the operator's mental model. CI
-   byte-checks `scripts/scan.py` against the scanner, so detector *logic* is
-   mirrored automatically; the SKILL.md prose and its flag list are NOT, so they
-   must be kept consistent with `reference.md` and the README CLI section by hand.
 
-Then run `pytest`, `python -m falsegreen src tests` (must stay clean), and
-`diff src/falsegreen/scanner.py skills/falsegreen/scripts/scan.py` (must be
-identical, copy the file if you changed the scanner).
+Then run `pytest` and `python -m falsegreen src tests` (must stay clean).
 
 ### Off-by-default codes
 

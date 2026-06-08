@@ -18,17 +18,18 @@ each test against more than twenty mechanical smells, the ones a parser can prov
 an assertion that never runs, a check that is empty or always true, a swallowed
 exception, a mock of the unit under test, an assertion stranded in dead code, a
 weak truthiness check, an async test that never awaits. High-confidence findings
-block the commit; the rest warn. The Claude Code skill then does the part a parser
-cannot: it reads the production code and judges whether each test asserts the
-*right* value, measured against the intended behavior rather than the current
-(possibly buggy) output.
+block the commit; the rest warn. The semantic layer — judging whether each test
+asserts the *right* value against intended behavior — lives in
+[falsegreen-skill](https://github.com/vinicq/falsegreen-skill), the companion
+LLM-based tool that covers Python and other languages.
 
 The checks are grounded in the rotten-green-test research (Soares 2023; Delplanque
 et al., ICSE 2019) and cross-walked against the published test-smell catalog. See
 [CREDITS.md](CREDITS.md).
 
-> Live on PyPI: `pip install falsegreen`. Also a pre-commit hook and a Claude Code
-> plugin (see the three install paths below).
+> Live on PyPI: `pip install falsegreen`. Also available as a pre-commit hook
+> (see install paths below). For the LLM semantic pass, see
+> [falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
 
 ---
 
@@ -39,10 +40,8 @@ et al., ICSE 2019) and cross-walked against the published test-smell catalog. Se
 - [What it validates, how, and why](#what-it-validates-how-and-why)
 - [The two layers](#the-two-layers)
 - [Download and use: the three ways](#download-and-use-the-three-ways)
-  - [1. As a Python package (CLI, no skill needed)](#1-as-a-python-package-cli-no-skill-needed)
+  - [1. As a Python package (CLI)](#1-as-a-python-package-cli)
   - [2. As a pre-commit hook](#2-as-a-pre-commit-hook)
-  - [3. As a Claude Code skill (the semantic pass)](#3-as-a-claude-code-skill-the-semantic-pass)
-  - [With the skill vs without the skill](#with-the-skill-vs-without-the-skill)
 - [Configuration](#configuration)
 - [Technologies used](#technologies-used)
 - [How it compares](#how-it-compares)
@@ -110,9 +109,9 @@ positive, and a labeled characterization snapshot is not a frozen bug. That
 classification step keeps the tool from flagging legitimate styles.
 
 The plain-language guide behind every case, with a real-world analogy and a
-before/after for each, is in [`docs/guide.md`](docs/guide.md). The detection
-reference that maps each code to its scanner code and to established tooling is in
-[`skills/falsegreen/reference.md`](skills/falsegreen/reference.md).
+before/after for each, is in [`docs/guide.md`](docs/guide.md). The full detection
+reference (code-to-tooling mapping, J1–J6 judgment index) lives in
+[`falsegreen-skill`](https://github.com/vinicq/falsegreen-skill).
 
 The basis is the rotten-green-test research: a passing test that holds an
 assertion which never runs (Elvys Soares, *A Multimethod Study of Test Smells*,
@@ -126,12 +125,10 @@ and the specific thing falsegreen took from each one, is in [CREDITS.md](CREDITS
 
 ## What it validates, how, and why
 
-The catalog has 18 named cases across the five families, and the scanner now ships
-21 codes (the five families are the scanner-facing view; the semantic pass asks the
-same questions as six judgments, J1 to J6, which is the LLM-facing view of the same
-thing, mapped code by code in [`reference.md`](skills/falsegreen/reference.md)). A
-case is caught either by the deterministic **scanner** (a code like `C5`) or only
-by the **semantic** pass (it needs to read the production code). HIGH-confidence
+The catalog has 18 named cases across the five families. The scanner ships 21 codes
+covering all mechanically-detectable patterns. Cases that require reading production
+intent (10, 11, 12, 15, 18) are handled by
+[falsegreen-skill](https://github.com/vinicq/falsegreen-skill). HIGH-confidence
 scanner findings block a commit; LOW ones warn.
 
 | # | Case | Why it fools you | Detected by | Conf |
@@ -182,11 +179,9 @@ and stays quiet on them.
 by structure. A parser sees a mock but cannot tell whether it replaced an edge
 (network, disk, clock) or the thing under test. It sees an arithmetic expression
 but cannot tell whether the expected value was derived independently or copied
-from the code. The `/falsegreen` skill reads the production code, derives the
-intended behavior from the oracle hierarchy, compares it against what the test
-asserts, and when they disagree, names which side is wrong. It is told to favor
-precision over recall and to ground a verdict in a cited contract line, never in
-the code's current output alone.
+from the code. That judgment requires reading the production code against an
+independent oracle — that is what
+[falsegreen-skill](https://github.com/vinicq/falsegreen-skill) does.
 
 **Why two confidence levels.** A blocking gate that cries wolf gets disabled. So
 only near-certain, mechanically-unambiguous patterns are HIGH (they block). The
@@ -214,26 +209,10 @@ different natures.
   stays-clean regression test, and a re-scan brought the HIGH count to 0 across all
   8 projects. Each false positive is recorded as it is fixed, with its regression
   tests, in the commit history and the CHANGELOG.
-- **The semantic pass (LLM, any language).** Cross-language coverage runs through
-  this pass, so its reliability is measured, not assumed. The validation is a
-  benchmark corpus: tests planted with a known ground truth, a test that mocks the
-  unit under test, one that copies the expected value from current output, one that
-  re-implements the production formula, in Python and in other languages, scored for
-  precision and recall with precision held above recall. Because the pass runs on an
-  LLM it is non-deterministic, so this is a periodic skill-validation artifact, not
-  a CI gate. The first labeled corpus has 24 Python cases (10 rotten, 14 sound)
-  across cases 10, 11, 12, and 18, with sound look-alikes and plain controls. Run
-  blind on a small model (Claude Haiku), the pass scored precision 1.00 (no false
-  alarms on the 14 sound tests), recall 0.70, and 1.00 recall on the clear-cut
-  smells; the only misses were borderline cases (a pure-delegation passthrough, a
-  trivial one-operator formula) where the precision-first guardrail defers to
-  "sound". That is the evidence behind the design claim that a small model is
-  enough for a precision-first semantic pass. The number to grow is recall: a
-  larger corpus, a second annotator, and multi-vote runs are the next step. A
-  second corpus of 20 TypeScript cases (Jest/Vitest) reproduced the pattern:
-  precision 1.00, recall 0.625, with the only misses being the same boundary
-  cases, evidence that the pass carries across languages and frameworks, not just
-  Python.
+- **The semantic pass (LLM).** Validation for the LLM-based semantic layer is
+  tracked in [falsegreen-skill](https://github.com/vinicq/falsegreen-skill), where
+  benchmark corpora for Python and TypeScript are maintained with precision/recall
+  measurements.
 
 ---
 
@@ -271,28 +250,19 @@ that maintainability layer well; run them alongside falsegreen.
 
 | Layer | What it is | When it runs | Catches |
 |---|---|---|---|
-| **Scanner** | Zero-dependency AST analysis (Python/pytest), one self-contained module | CLI, CI, pre-commit | the mechanical patterns (21 codes) |
-| **Semantic pass** | A Claude Code skill (`/falsegreen`) that reads the code | on demand, in Claude Code | the bug-freezing patterns no static tool can see (cases 10/11/12/15/18) |
+| **Scanner** (this repo) | Zero-dependency AST analysis (Python/pytest) | CLI, CI, pre-commit | 21 mechanical codes |
+| **Semantic pass** ([falsegreen-skill](https://github.com/vinicq/falsegreen-skill)) | LLM-based analysis, Python + other languages | on demand | bug-freezing patterns no static tool can see (cases 10/11/12/15/18) |
 
 The scanner is the fast, deterministic pre-filter. It overlaps in part with
 `ruff`'s `PT` rules and with research tools like PyNose, and that overlap is fine:
-run them together. The semantic pass is the part nobody else ships, and it is the
-reason the project exists.
-
-The semantic pass runs on whatever Claude model your Claude Code session uses. It
-is not pinned to one model, and it does not need a frontier one: the research it
-draws on (Agentic LMs, SBES 2025; Santana Jr. et al., 2025) shows that small,
-locally-runnable models detect and refactor these patterns well. The value is in
-the protocol, not in any single model.
+run them together. For the semantic layer — and for TypeScript, JavaScript, Java,
+and other languages — use [falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
 
 ---
 
-## Download and use: the three ways
+## Download and use
 
-Pick one or combine them. The CLI and pre-commit need no Claude Code; the skill
-adds the semantic pass on top.
-
-### 1. As a Python package (CLI, no skill needed)
+### 1. As a Python package (CLI)
 
 Install from PyPI:
 
@@ -322,12 +292,6 @@ code scanning / PR annotations; `--format junit` emits JUnit XML (HIGH ->
 finding. Wire those into any CI step. No third-party runtime dependencies; Python
 3.8+.
 
-Try it on the bundled demo (one bad test per case):
-
-```bash
-pipx run falsegreen skills/falsegreen/examples/bad_tests_sample.py
-```
-
 ### 2. As a pre-commit hook
 
 This is the standard, version-pinned way to gate every commit. Add to your
@@ -352,42 +316,13 @@ python -m falsegreen.hook_install --repo .      # install
 python -m falsegreen.hook_install --uninstall   # remove
 ```
 
-### 3. As a Claude Code skill (the semantic pass)
+### 3. With the semantic pass (multi-language)
 
-Install the plugin:
-
-```
-/plugin marketplace add vinicq/falsegreen
-```
-
-Then, in a Claude Code session, run:
-
-```
-/falsegreen
-```
-
-against a diff or a module. The skill triages the scanner output first, then does
-the semantic work: for each test it finds the unit under test, derives the
-intended behavior from the oracle hierarchy, and reports tests that pass while
-asserting the wrong thing, with the cited evidence and a concrete fix. It is
-read-only by default (it proposes fixes, it does not edit your tests unless you
-ask).
-
-The scanner is bundled inside the skill, so the plugin works on its own. On
-another Agent Skills client that does not define `${CLAUDE_SKILL_DIR}`, install
-the package (`pip install falsegreen`) and the skill falls back to the CLI.
-
-### With the skill vs without the skill
-
-- **Without the skill** (CLI / pre-commit / CI): you get the deterministic
-  scanner. It catches the 16 mechanical codes and blocks commits on the
-  high-confidence ones. This is everything a non-Claude-Code user needs and runs
-  anywhere Python runs.
-- **With the skill** (`/falsegreen` in Claude Code): you additionally get the
-  semantic pass, which catches the five code-aware cases (10, 11, 12, 15, 18),
-  including the headline one: a test that is green while its expected value
-  contradicts the spec. No static tool, this one included, can find that on its
-  own.
+For cases that require reading production intent — mocking the unit under test,
+copying expected from current output, re-implementing the formula — use
+[falsegreen-skill](https://github.com/vinicq/falsegreen-skill). It covers Python,
+TypeScript, JavaScript, Java, and other languages via an LLM-based analysis using
+the same case catalog.
 
 ---
 
@@ -447,12 +382,9 @@ override.
 - **Packaging:** `hatchling` build backend, SPDX license metadata (PEP 639),
   console entry point, distributed on PyPI.
 - **Distribution:** a [pre-commit](https://pre-commit.com) hook
-  (`.pre-commit-hooks.yaml`) and a Claude Code plugin following the
-  [Agent Skills](https://agentskills.io) open standard (`SKILL.md` plus a
-  `.claude-plugin/` marketplace manifest).
+  (`.pre-commit-hooks.yaml`), distributed on PyPI.
 - **CI:** GitHub Actions across Python 3.8 / 3.11 / 3.13, running `ruff`,
-  `pytest`, a self-scan (the tool must stay clean on its own code), and a
-  drift-check that the bundled scanner copy matches the package byte for byte.
+  `pytest`, and a self-scan (the tool must stay clean on its own code).
 
 ---
 
@@ -460,17 +392,20 @@ override.
 
 - **ruff / flake8-pytest-style** - mature, fast lint rules. Overlaps on broad
   `raises` (PT011) and assert-in-except (PT017). Run both. falsegreen adds
-  uncollected tests, always-true asserts, self-comparison, mock typos, and the
-  semantic pass.
+  uncollected tests, always-true asserts, self-comparison, and mock typos.
 - **PyNose / pytest-smell / TEMPY** - test-smell catalogs from research. Broader
   taxonomy, but no commit gate and no oracle-correctness check.
 - **mutmut / cosmic-ray** - mutation testing, the most honest measure of whether a
   green suite fails when the code is wrong. Complementary and heavier. falsegreen
   is the cheap pre-filter you run on every commit; mutation testing is the deep
   audit you run on the suites that matter.
+- **[falsegreen-skill](https://github.com/vinicq/falsegreen-skill)** - the LLM
+  companion for the semantic pass (cases 10/11/12/15/18) and for TypeScript,
+  JavaScript, Java, and other languages.
 
-The defensible gap: nobody else combines a deterministic commit gate with a
-code-as-evidence semantic pass aimed at oracle correctness (cases 12 and 18).
+The defensible gap: a deterministic commit gate that catches the mechanical
+false-positive patterns with zero runtime dependencies, paired with an LLM
+semantic layer that catches the oracle-correctness cases no static tool can see.
 
 ---
 
@@ -478,19 +413,16 @@ code-as-evidence semantic pass aimed at oracle correctness (cases 12 and 18).
 
 ```
 falsegreen/
-  src/falsegreen/scanner.py        the deterministic scanner (canonical)
+  src/falsegreen/scanner.py        the deterministic scanner
   src/falsegreen/hook_install.py   raw git-hook installer
-  skills/falsegreen/
-    SKILL.md                       the semantic-pass protocol
-    reference.md                   the 18-case detection rubric
-    scripts/scan.py                bundled scanner (kept identical to the package)
-    examples/bad_tests_sample.py   one bad test per case (demo + regression)
   docs/guide.md                    plain-language guide to every case
   tests/test_scanner.py            the scanner's own tests
   .pre-commit-hooks.yaml           pre-commit integration
-  .claude-plugin/                  plugin + marketplace manifests
   pyproject.toml                   packaging
 ```
+
+The LLM skill, the semantic-pass protocol, and the multi-language case reference
+live in [falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
 
 ---
 

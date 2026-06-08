@@ -24,9 +24,5 @@ jobs:
         run: ruff check src tests
       - name: Test
         run: pytest -q
-      - name: Bundled skill scanner must match the package
-        run: diff -u src/falsegreen/scanner.py skills/falsegreen/scripts/scan.py
-      - name: Self-scan (must flag the demo, must not flag itself)
-        run: |
-          python -m falsegreen skills/falsegreen/examples/bad_tests_sample.py || true
-          python -m falsegreen src tests
+      - name: Self-scan (must not flag itself)
+        run: python -m falsegreen src tests
