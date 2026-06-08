@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "falsegreen"
-version = "0.2.1"
+version = "0.2.2"
 description = "Find unit tests that give false positives: green tests that protect nothing, and tests that pass while asserting the wrong expected value."
 readme = "README.md"
 requires-python = ">=3.8"
