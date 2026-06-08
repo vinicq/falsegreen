@@ -40,7 +40,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
-__version__ = "0.2.2"  # keep in lockstep with pyproject.toml
+__version__ = "0.3.0"  # keep in lockstep with pyproject.toml
 TOOL_URI = "https://github.com/vinicq/falsegreen"
 
 try:
