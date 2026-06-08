@@ -169,6 +169,8 @@ The scanner is the fast, deterministic pre-filter. For TypeScript, JavaScript, J
 pip install falsegreen
 ```
 
+No permanent install needed: `uvx falsegreen tests/` or `pipx run falsegreen tests/` runs the latest release from PyPI without touching your environment.
+
 ```bash
 falsegreen                        # scan the current directory
 falsegreen tests/                 # scan a folder or a single file
