@@ -7,6 +7,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- C30 (LOW): `responses.add()` or `httpretty.register_uri()` called in a test without
+  activating the library's HTTP interceptor (`@responses.activate`, `@httpretty.activate`,
+  or an equivalent context manager). Without activation the mock is registered but every
+  HTTP call bypasses it and reaches the real network — the test passes only when the
+  live service is reachable and returns the expected data.
 - C25 (LOW): `@pytest.mark.xfail` without `strict=True`. When the test unexpectedly
   passes (XPASS), pytest silently treats it as a success — the bug was fixed but
   the test is never promoted to a normal passing test. Enable globally with

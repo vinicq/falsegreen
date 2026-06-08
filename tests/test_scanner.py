@@ -1971,3 +1971,81 @@ def test_c29_is_low_confidence(tmp_path):
     """))
     findings = [a for a in analyze_file(str(f)) if a.code == "C29"]
     assert findings and findings[0].conf == "low"
+
+
+# ---------------------------------------------------------------------------
+# C30: responses.add() without @responses.activate
+# ---------------------------------------------------------------------------
+
+def test_c30_add_without_activate_fires(tmp_path):
+    f = _write(tmp_path / "test_c30.py", textwrap.dedent("""
+        def test_fetch_user():
+            responses.add(responses.GET, "http://api.example.com/user", json={"id": 1})
+            result = fetch_user(1)
+            assert result["id"] == 1
+    """))
+    assert "C30" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c30_add_callback_without_activate_fires(tmp_path):
+    f = _write(tmp_path / "test_c30b.py", textwrap.dedent("""
+        def test_fetch():
+            responses.add_callback(responses.GET, "http://api.example.com/", callback=handler)
+            result = fetch()
+            assert result is not None
+    """))
+    assert "C30" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c30_with_activate_decorator_clean(tmp_path):
+    f = _write(tmp_path / "test_c30c.py", textwrap.dedent("""
+        @responses.activate
+        def test_fetch_user():
+            responses.add(responses.GET, "http://api.example.com/user", json={"id": 1})
+            result = fetch_user(1)
+            assert result["id"] == 1
+    """))
+    assert "C30" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c30_with_context_manager_clean(tmp_path):
+    f = _write(tmp_path / "test_c30d.py", textwrap.dedent("""
+        def test_fetch_user():
+            with responses.RequestsMock() as rsps:
+                rsps.add(rsps.GET, "http://api.example.com/user", json={"id": 1})
+                result = fetch_user(1)
+                assert result["id"] == 1
+    """))
+    assert "C30" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c30_httpretty_without_activate_fires(tmp_path):
+    f = _write(tmp_path / "test_c30e.py", textwrap.dedent("""
+        def test_get():
+            httpretty.register_uri(httpretty.GET, "http://example.com/api", body="ok")
+            result = get_data()
+            assert result == "ok"
+    """))
+    assert "C30" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c30_httpretty_with_activate_clean(tmp_path):
+    f = _write(tmp_path / "test_c30f.py", textwrap.dedent("""
+        @httpretty.activate
+        def test_get():
+            httpretty.register_uri(httpretty.GET, "http://example.com/api", body="ok")
+            result = get_data()
+            assert result == "ok"
+    """))
+    assert "C30" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c30_is_low_confidence(tmp_path):
+    f = _write(tmp_path / "test_c30g.py", textwrap.dedent("""
+        def test_fetch():
+            responses.add(responses.GET, "http://api.example.com/", json={})
+            result = fetch()
+            assert result == {}
+    """))
+    findings = [a for a in analyze_file(str(f)) if a.code == "C30"]
+    assert findings and findings[0].conf == "low"

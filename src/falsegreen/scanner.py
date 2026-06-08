@@ -94,6 +94,7 @@ CASES = {
     "C27": ("try/except/pass — test passes whether the expected exception is raised or not", "high", "J1"),
     "C28": ("pytest.raises binding declared but exception content never inspected", "low", "J4"),
     "C29": ("os.environ assigned directly in a test — env state leaks between tests", "low", "J6"),
+    "C30": ("responses.add() / httpretty.register_uri() without activating the interceptor", "low", "J3"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
     # --- diagnostic group (readability / observability; default off) ----------
     "D1":  ("multiple assertions without messages (assertion roulette)", "off", "J4"),
@@ -144,6 +145,14 @@ FLUENT_ASSERT_CALLS = {"expect"}
 # these, datetime.now() / time.time() calls are not non-deterministic — the
 # test has frozen time, so C16 clock-read findings are suppressed.
 TIME_CONTROL_IMPORTS = {"freezegun", "time_machine"}
+
+# Methods that register mock HTTP responses. Calling any of these without first
+# activating the library's interceptor (decorator or context manager) lets real
+# HTTP calls reach the network — the mock is declared but never applied.
+RESPONSES_SETUP_CALLS = {
+    "responses.add", "responses.add_callback", "responses.add_passthrough",
+    "httpretty.register_uri",
+}
 
 IGNORED_DIRS = {
     ".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules",
@@ -1371,6 +1380,42 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             findings.append(Finding(file, n.lineno, "D3"))
         else:
             _seen_dumps[dump] = n.lineno
+
+    # C30: responses.add() / httpretty.register_uri() without activating the library
+    # interceptor. Without @responses.activate (or an equivalent context manager), the
+    # mock response is registered but HTTP calls bypass it and hit the real network.
+    # The test passes only when the real server is up and returning the expected data.
+    _has_responses_add = any(
+        isinstance(n, ast.Call) and dotted_name(n.func) in RESPONSES_SETUP_CALLS
+        for n in children_no_nesting(func)
+    )
+    if _has_responses_add:
+        _interceptor_active = False
+        for d in func.decorator_list:
+            dn = dotted_name(d.func if isinstance(d, ast.Call) else d)
+            if dn.endswith("activate") and ("responses" in dn or "httpretty" in dn):
+                _interceptor_active = True
+                break
+        if not _interceptor_active:
+            for n in children_no_nesting(func):
+                if isinstance(n, ast.Call):
+                    dn = dotted_name(n.func)
+                    if dn in ("responses.start", "httpretty.enable"):
+                        _interceptor_active = True
+                        break
+                if isinstance(n, ast.With):
+                    for item in n.items:
+                        ce = item.context_expr
+                        dn = dotted_name(ce.func if isinstance(ce, ast.Call) else ce)
+                        if "responses" in dn or "httpretty" in dn:
+                            _interceptor_active = True
+                            break
+                if _interceptor_active:
+                    break
+        if not _interceptor_active:
+            for n in children_no_nesting(func):
+                if isinstance(n, ast.Call) and dotted_name(n.func) in RESPONSES_SETUP_CALLS:
+                    findings.append(Finding(file, n.lineno, "C30"))
 
     # M2: test function body exceeds the configured line-count threshold.
     # A very long test almost always does more than one thing, which makes
