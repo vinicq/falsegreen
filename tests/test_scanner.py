@@ -1683,3 +1683,74 @@ def test_render_text_no_diagnostic_section_when_disabled(tmp_path):
     from falsegreen.scanner import render_text
     out = render_text(findings)
     assert "DIAGNOSTIC" not in out
+
+
+def test_render_text_shows_coupling_section(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml",
+                 'long_test_threshold = 2\n[severity]\nM2 = "info"\n')
+    body = "\n".join("    x_%d = %d" % (i, i) for i in range(3))
+    f = _write(tmp_path / "test_rt2.py",
+               "def test_long():\n" + body + "\n    assert x_0 == 0\n")
+    findings = run([f], config_path=cfg)
+    from falsegreen.scanner import render_text
+    out = render_text(findings)
+    assert "COUPLING" in out
+    assert "M2" in out
+
+
+# --- D3: additional edge-case and exit-code tests ----------------------------
+
+def test_d3_info_does_not_affect_exit_code(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD3 = "info"\n')
+    f = _write(tmp_path / "test_d3b.py", textwrap.dedent("""
+        def test_user():
+            user = create_user("alice")
+            assert user.email == "alice@example.com"
+            assert user.email == "alice@example.com"
+    """))
+    assert main([f, "--config", cfg]) == 0
+
+
+def test_d3_flags_at_line_of_duplicate(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD3 = "info"\n')
+    f = _write(tmp_path / "test_d3c.py", textwrap.dedent("""
+        def test_x():
+            assert compute() == 1
+            assert other() == 2
+            assert compute() == 1
+    """))
+    findings = [a for a in run([f], config_path=cfg) if a.code == "D3"]
+    assert len(findings) == 1
+    assert findings[0].line == 5
+
+
+# --- D1: nested functions must not be counted --------------------------------
+
+def test_d1_nested_asserts_not_counted(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD1 = "info"\n')
+    f = _write(tmp_path / "test_d1b.py", textwrap.dedent("""
+        def test_outer():
+            def helper():
+                assert inner_a() == 1
+                assert inner_b() == 2
+            helper()
+            assert outer_result() == 42
+    """))
+    # Only one assert at the outer level; D1 should not fire on test_outer.
+    assert "D1" not in {a.code for a in run([f], config_path=cfg)}
+
+
+# --- M2: invalid threshold falls back to default ----------------------------
+
+def test_m2_invalid_threshold_uses_default(tmp_path, capsys):
+    cfg = _write(tmp_path / ".falsegreen.toml",
+                 'long_test_threshold = "not-a-number"\n[severity]\nM2 = "info"\n')
+    # Default threshold is 50; a 3-line test should not fire.
+    f = _write(tmp_path / "test_m2b.py", textwrap.dedent("""
+        def test_short():
+            x = compute()
+            assert x == 42
+    """))
+    assert "M2" not in {a.code for a in run([f], config_path=cfg)}
+    captured = capsys.readouterr()
+    assert "long_test_threshold" in captured.err
