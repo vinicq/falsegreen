@@ -1295,3 +1295,139 @@ def test_loop_over_literal_asserts_is_not_c21(tmp_path):
                 assert q.maxsize == 200
     """)
     assert "C21" not in codes
+
+
+# --- sure / expects / ward: fluent assertion libraries --------------------
+
+def test_sure_should_is_not_c2(tmp_path):
+    # sure library: result.should.equal(y) is a real assertion
+    out = scan_source(tmp_path, """
+        def test_x():
+            result.should.equal(42)
+    """)
+    assert "C2" not in out
+    assert "C2b" not in out
+
+
+def test_expects_to_is_not_c2(tmp_path):
+    # ward / expects: expect(x).to(equal(y)) is a real assertion
+    out = scan_source(tmp_path, """
+        def test_x():
+            expect(result).to(equal(42))
+    """)
+    assert "C2" not in out
+    assert "C2b" not in out
+
+
+# --- HTTP mock libraries recognized as web layer --------------------------
+
+def test_responses_import_is_web_layer(tmp_path):
+    fs = _findings(tmp_path, """
+        import responses
+        def test_x():
+            assert True
+    """)
+    assert fs and all(a.layer == "web" for a in fs)
+
+
+def test_httpretty_import_is_web_layer(tmp_path):
+    fs = _findings(tmp_path, """
+        import httpretty
+        def test_x():
+            assert True
+    """)
+    assert fs and all(a.layer == "web" for a in fs)
+
+
+def test_respx_import_is_web_layer(tmp_path):
+    fs = _findings(tmp_path, """
+        import respx
+        def test_x():
+            assert True
+    """)
+    assert fs and all(a.layer == "web" for a in fs)
+
+
+def test_http_mock_softens_c6(tmp_path):
+    # a web mock library signals the test targets HTTP interactions: response
+    # presence checks are not weak truthiness in this context.
+    codes = scan_source(tmp_path, """
+        import responses
+        def test_endpoint():
+            assert client.get("/health")
+    """)
+    assert "C6" not in codes
+
+
+# --- new browser libraries recognized ------------------------------------
+
+def test_helium_import_is_browser_layer(tmp_path):
+    fs = _findings(tmp_path, """
+        import helium
+        def test_x():
+            assert True
+    """)
+    assert fs and all(a.layer == "browser" for a in fs)
+
+
+def test_pyppeteer_import_is_browser_layer(tmp_path):
+    fs = _findings(tmp_path, """
+        import pyppeteer
+        def test_x():
+            assert True
+    """)
+    assert fs and all(a.layer == "browser" for a in fs)
+
+
+def test_seleniumbase_import_is_browser_layer(tmp_path):
+    fs = _findings(tmp_path, """
+        import seleniumbase
+        def test_x():
+            assert True
+    """)
+    assert fs and all(a.layer == "browser" for a in fs)
+
+
+# --- C16: time-control libraries suppress clock-read findings -------------
+
+def test_c16_fires_for_raw_datetime_now(tmp_path):
+    codes = scan_source(tmp_path, """
+        import datetime
+        def test_x():
+            assert datetime.datetime.now().hour == 12
+    """)
+    assert "C16" in codes
+
+
+def test_c16_suppressed_when_freezegun_imported(tmp_path):
+    # freezegun controls the clock: datetime.now() is no longer non-deterministic
+    codes = scan_source(tmp_path, """
+        import datetime
+        from freezegun import freeze_time
+        def test_x():
+            assert datetime.datetime.now().hour == 12
+    """)
+    assert "C16" not in codes
+
+
+def test_c16_suppressed_when_time_machine_imported(tmp_path):
+    # time_machine controls the clock: same exemption applies
+    codes = scan_source(tmp_path, """
+        import datetime
+        import time_machine
+        def test_x():
+            assert datetime.datetime.now().hour == 12
+    """)
+    assert "C16" not in codes
+
+
+# --- C22: trio.run drives the loop (not an async liar) -------------------
+
+def test_c22_clean_when_trio_drives_the_loop(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nC22 = "low"\n')
+    f = _write(tmp_path / "test_x.py", textwrap.dedent("""
+        async def test_x():
+            results = trio.run(gather)
+            assert results == [1, 2]
+    """))
+    assert "C22" not in {a.code for a in run([f], config_path=cfg)}

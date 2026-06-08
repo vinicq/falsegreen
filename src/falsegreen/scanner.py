@@ -115,6 +115,17 @@ HELPER_PREFIXES = (
     "setup", "teardown", "helper", "fixture", "_",
 )
 
+# Fluent assertion library entry points that count as an assertion in test bodies.
+# assertpy assert_that(x)... is already caught by the startswith("assert") rule.
+# expects / ward: expect(x).to(equal(y)) or expect(x).to.equal(y)
+# sure: x.should.equal(y) — the .should attribute access is detected separately.
+FLUENT_ASSERT_CALLS = {"expect"}
+
+# Libraries that control the system clock in tests. When a file imports one of
+# these, datetime.now() / time.time() calls are not non-deterministic — the
+# test has frozen time, so C16 clock-read findings are suppressed.
+TIME_CONTROL_IMPORTS = {"freezegun", "time_machine"}
+
 IGNORED_DIRS = {
     ".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules",
     "__pycache__", ".tox", ".mypy_cache", ".pytest_cache", "build",
@@ -233,9 +244,13 @@ def _apply_exclude(files, globs):
 WEB_IMPORT_ROOTS = {
     "django", "flask", "fastapi", "starlette", "rest_framework",
     "httpx", "requests", "webtest", "werkzeug", "aiohttp",
+    # HTTP mock libraries: a test that intercepts HTTP calls targets the web layer
+    "responses", "httpretty", "respx", "aioresponses", "vcr",
+    "requests_mock", "pook", "pytest_httpserver",
 }
 BROWSER_IMPORT_ROOTS = {
     "selenium", "playwright", "splinter", "pytest_playwright",
+    "helium", "pyppeteer", "seleniumbase",
 }
 
 
@@ -292,6 +307,21 @@ def detect_test_context(func, file_layer):
             elif root in WEB_CTX_NAMES and last in HTTP_METHODS:
                 ctx.add("web")
     return ctx
+
+
+def file_controls_time(tree):
+    """True if the file imports a time-control library (freezegun or time-machine).
+    When time is externally frozen, datetime.now()/time.time() calls inside tests
+    are not non-deterministic, so C16 clock-read findings are suppressed."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in TIME_CONTROL_IMPORTS:
+                    return True
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.split(".")[0] in TIME_CONTROL_IMPORTS:
+                return True
+    return False
 
 
 def is_web_presence_operand(test):
@@ -678,6 +708,9 @@ def has_assertion(func):
     for n in children_no_nesting(func):
         if isinstance(n, ast.Assert):
             return True
+        # sure: result.should.equal(y) — .should is the fluent assertion entry point
+        if isinstance(n, ast.Attribute) and n.attr == "should":
+            return True
         if isinstance(n, ast.Call):
             target = dotted_name(n.func)
             if target.endswith("pytest.raises") or target.endswith("raises"):
@@ -686,6 +719,9 @@ def has_assertion(func):
                 return True
             last = target.split(".")[-1]
             if last in MOCK_ASSERTS_VALID or last.startswith("assert"):
+                return True
+            # expects / ward: expect(x).to(equal(y))
+            if last in FLUENT_ASSERT_CALLS:
                 return True
         if isinstance(n, ast.With):
             for item in n.items:
@@ -756,9 +792,13 @@ def block_has_assertion(stmts):
         for sub in ast.walk(s):
             if isinstance(sub, ast.Assert):
                 return True
+            if isinstance(sub, ast.Attribute) and sub.attr == "should":
+                return True
             if isinstance(sub, ast.Call):
                 t = dotted_name(sub.func)
-                if t.endswith("raises") or t.split(".")[-1].startswith("assert"):
+                last = t.split(".")[-1]
+                if t.endswith("raises") or last.startswith("assert") \
+                        or last in FLUENT_ASSERT_CALLS:
                     return True
     return False
 
@@ -832,12 +872,17 @@ def _stmt_is_check(stmt):
     """A statement that performs a verification (assert, mock-assert, raises)."""
     if isinstance(stmt, ast.Assert):
         return True
-    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
-        t = dotted_name(stmt.value.func)
-        last = t.split(".")[-1]
-        if last in MOCK_ASSERTS_VALID or last.startswith("assert") \
-                or t.endswith("raises") or last == "fail":
+    if isinstance(stmt, ast.Expr):
+        # sure: result.should.equal(y) — top-level expression accesses .should
+        if isinstance(stmt.value, ast.Attribute) and stmt.value.attr == "should":
             return True
+        if isinstance(stmt.value, ast.Call):
+            t = dotted_name(stmt.value.func)
+            last = t.split(".")[-1]
+            if last in MOCK_ASSERTS_VALID or last.startswith("assert") \
+                    or t.endswith("raises") or last == "fail" \
+                    or last in FLUENT_ASSERT_CALLS:
+                return True
     if isinstance(stmt, ast.With):
         for item in stmt.items:
             if is_call_to(item.context_expr, "pytest.raises", "raises"):
@@ -889,7 +934,7 @@ def is_async_liar(func):
     if has_await:
         return False
     drives_loop = any(
-        is_call_to(c, "asyncio.run", "run_until_complete", "anyio.run")
+        is_call_to(c, "asyncio.run", "run_until_complete", "anyio.run", "trio.run")
         for c in ast.walk(func) if isinstance(c, ast.Call))
     if drives_loop:
         return False
@@ -928,11 +973,13 @@ def func_has_any_check(func):
     for n in children_no_nesting(func):
         if isinstance(n, ast.Assert):
             return True
+        if isinstance(n, ast.Attribute) and n.attr == "should":
+            return True
         if isinstance(n, ast.Call):
             t = dotted_name(n.func)
             last = t.split(".")[-1]
             if last in MOCK_ASSERTS_VALID or last.startswith("assert") \
-                    or t.endswith("raises"):
+                    or t.endswith("raises") or last in FLUENT_ASSERT_CALLS:
                 return True
         if isinstance(n, ast.With):
             for item in n.items:
@@ -1034,7 +1081,7 @@ def looks_like_forgotten_nested_test(func, scope):
 
 
 def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
-                     file_layer="logic"):
+                     file_layer="logic", controls_time=False):
     line = func.lineno
     mock_names = gather_mock_names(func)
     ctx = detect_test_context(func, file_layer)
@@ -1168,8 +1215,10 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             target = dotted_name(n.func)
             if target.endswith("time.sleep") or target.endswith("sleep"):
                 findings.append(Finding(file, n.lineno, "C16", "fixed sleep"))
-            elif target.endswith("datetime.now") or target.endswith("datetime.today") \
-                    or target.endswith("date.today") or target.endswith("time.time"):
+            elif not controls_time and (
+                target.endswith("datetime.now") or target.endswith("datetime.today")
+                or target.endswith("date.today") or target.endswith("time.time")
+            ):
                 findings.append(Finding(file, n.lineno, "C16", "reads the system clock"))
             elif (target.startswith("random.") or target.endswith("randint")
                   or target.endswith("choice") or target.endswith("shuffle")) and not has_seed:
@@ -1293,6 +1342,7 @@ def analyze_file(file):
 
     collected = is_pytest_test_file(file)
     layer = detect_file_layer(tree)
+    time_controlled = file_controls_time(tree)
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             # A top-level `test*` function is only a real (rotten-green) test if
@@ -1301,7 +1351,8 @@ def analyze_file(file):
             # tests/data/cases/*.py, or a plain helper module) is never run, so its
             # empty/weak body is not a false-green test.
             if node.name.startswith("test") and collected:
-                analyze_function(node, file, findings, file_layer=layer)
+                analyze_function(node, file, findings, file_layer=layer,
+                                 controls_time=time_controlled)
             elif is_pytest_test_file(file) and looks_like_loose_test(node) \
                     and not has_fixture_decorator(node) \
                     and not is_web_route_handler(node) \
@@ -1325,7 +1376,8 @@ def analyze_file(file):
                         if m.name.startswith("test"):
                             analyze_function(m, file, findings, in_class=True,
                                              skip_exempt=class_skipped,
-                                             file_layer=layer)
+                                             file_layer=layer,
+                                             controls_time=time_controlled)
 
     for i, line in enumerate(source.splitlines(), start=1):
         if re.match(r"^\s*#\s*assert\b", line):
