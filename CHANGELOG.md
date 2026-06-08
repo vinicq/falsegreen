@@ -7,6 +7,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- C33 (LOW): sklearn metric result never asserted. Calling `model.score()`,
+  `accuracy_score()`, `f1_score()`, `roc_auc_score()`, and similar metric
+  functions without asserting on the return value means the test passes
+  regardless of actual model performance. A model with 10% accuracy passes
+  as easily as one with 95%. Covers both discarded results and names assigned
+  but never used in any assert.
+- C16 now also fires for `train_test_split()` without `random_state=`. Without
+  a fixed seed, different runs produce different train/test splits and the same
+  test can pass or fail by chance depending on the random allocation.
 - D4 (off by default, `info` severity): `@pytest.mark.parametrize` with more than two
   cases and no `ids=` argument. Without ids, pytest names each case `test_foo[0]`,
   `test_foo[1]`, etc. — the failing case cannot be identified from the test name alone.

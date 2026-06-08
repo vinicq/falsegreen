@@ -97,6 +97,7 @@ CASES = {
     "C30": ("responses.add() / httpretty.register_uri() without activating the interceptor", "low", "J3"),
     "C31": ("capsys/capfd.readouterr() result never asserted — stdout/stderr captured but not checked", "low", "J4"),
     "C32": ("@pytest.mark.skip without reason= — test silently excluded with no documented motive", "low", "J1"),
+    "C33": ("sklearn metric result never asserted — model performance computed but no threshold checked", "low", "J4"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
     # --- diagnostic group (readability / observability; default off) ----------
     "D1":  ("multiple assertions without messages (assertion roulette)", "off", "J4"),
@@ -156,6 +157,21 @@ RESPONSES_SETUP_CALLS = {
     "responses.add", "responses.add_callback", "responses.add_passthrough",
     "httpretty.register_uri",
 }
+
+# sklearn / ML metric functions whose return value is the performance score.
+# When the result is discarded or assigned but never asserted, there is no
+# threshold check — the test passes regardless of the model's actual quality.
+ML_METRIC_FUNCTIONS = {
+    "accuracy_score", "balanced_accuracy_score",
+    "f1_score", "precision_score", "recall_score",
+    "roc_auc_score", "average_precision_score",
+    "log_loss", "matthews_corrcoef",
+    "mean_squared_error", "mean_absolute_error",
+    "mean_absolute_percentage_error", "r2_score",
+    "confusion_matrix",
+}
+# Estimator methods that return a scalar performance score.
+ML_SCORE_METHODS = {"score"}
 
 IGNORED_DIRS = {
     ".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules",
@@ -1281,6 +1297,10 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             elif (target.startswith("random.") or target.endswith("randint")
                   or target.endswith("choice") or target.endswith("shuffle")) and not has_seed:
                 findings.append(Finding(file, n.lineno, "C16", "randomness without a fixed seed"))
+            elif target.endswith("train_test_split") \
+                    and not any(kw.arg == "random_state" for kw in n.keywords):
+                findings.append(Finding(file, n.lineno, "C16",
+                                        "train_test_split without random_state — non-deterministic split"))
 
     for n in children_no_nesting(func):
         if isinstance(n, ast.If) and isinstance(n.test, ast.UnaryOp) \
@@ -1483,6 +1503,40 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             if names and not (names & _assert_names):
                 findings.append(Finding(file, n.lineno, "C31",
                                         "readouterr() result captured but never asserted"))
+
+    # C33: sklearn/ML metric result never asserted. Calling accuracy_score(),
+    # f1_score(), model.score(), etc. without asserting on the return value means
+    # the test passes regardless of the model's actual performance — a model with
+    # 10% accuracy passes as easily as one with 95%. Two patterns: result
+    # discarded entirely (bare Expr), or assigned to a name never used in assert.
+    for n in children_no_nesting(func):
+        _is_metric_call = False
+        if isinstance(n.value if isinstance(n, (ast.Expr, ast.Assign)) else n, ast.Call):
+            call_node = n.value if isinstance(n, (ast.Expr, ast.Assign)) else None
+            if call_node is not None and isinstance(call_node, ast.Call):
+                func_name = dotted_name(call_node.func).split(".")[-1]
+                is_method = isinstance(call_node.func, ast.Attribute)
+                if func_name in ML_METRIC_FUNCTIONS or \
+                        (is_method and func_name in ML_SCORE_METHODS):
+                    _is_metric_call = True
+        if not _is_metric_call:
+            continue
+        call_node = n.value
+        if isinstance(n, ast.Expr):
+            findings.append(Finding(file, n.lineno, "C33",
+                                    "metric result discarded — no threshold checked"))
+        elif isinstance(n, ast.Assign):
+            names = set()
+            for tgt in n.targets:
+                if isinstance(tgt, ast.Name):
+                    names.add(tgt.id)
+                elif isinstance(tgt, ast.Tuple):
+                    for elt in tgt.elts:
+                        if isinstance(elt, ast.Name):
+                            names.add(elt.id)
+            if names and not (names & _assert_names):
+                findings.append(Finding(file, n.lineno, "C33",
+                                        "metric result captured but never asserted"))
 
     # M2: test function body exceeds the configured line-count threshold.
     # A very long test almost always does more than one thing, which makes

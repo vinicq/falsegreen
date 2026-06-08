@@ -2234,3 +2234,94 @@ def test_d4_off_by_default(tmp_path):
             assert x > 0
     """))
     assert "D4" not in {a.code for a in run([f])}
+
+
+# ---------------------------------------------------------------------------
+# C16 extension: train_test_split without random_state
+# ---------------------------------------------------------------------------
+
+def test_c16_train_test_split_no_random_state_fires(tmp_path):
+    f = _write(tmp_path / "test_c16tts.py", textwrap.dedent("""
+        from sklearn.model_selection import train_test_split
+
+        def test_split():
+            X_train, X_test, y_train, y_test = train_test_split(X, y)
+            assert len(X_train) > 0
+    """))
+    codes = {a.code for a in analyze_file(str(f))}
+    assert "C16" in codes
+
+
+def test_c16_train_test_split_with_random_state_clean(tmp_path):
+    f = _write(tmp_path / "test_c16tts2.py", textwrap.dedent("""
+        from sklearn.model_selection import train_test_split
+
+        def test_split():
+            X_train, X_test = train_test_split(X, random_state=42)
+            assert len(X_train) > 0
+    """))
+    assert "C16" not in {a.code for a in analyze_file(str(f))}
+
+
+# ---------------------------------------------------------------------------
+# C33: sklearn metric result never asserted
+# ---------------------------------------------------------------------------
+
+def test_c33_score_discarded_fires(tmp_path):
+    f = _write(tmp_path / "test_c33a.py", textwrap.dedent("""
+        def test_model_quality(model, X_test, y_test):
+            model.score(X_test, y_test)
+    """))
+    assert "C33" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c33_accuracy_score_discarded_fires(tmp_path):
+    f = _write(tmp_path / "test_c33b.py", textwrap.dedent("""
+        from sklearn.metrics import accuracy_score
+
+        def test_accuracy(model, X_test, y_test):
+            y_pred = model.predict(X_test)
+            accuracy_score(y_test, y_pred)
+    """))
+    assert "C33" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c33_f1_assigned_not_asserted_fires(tmp_path):
+    f = _write(tmp_path / "test_c33c.py", textwrap.dedent("""
+        from sklearn.metrics import f1_score
+
+        def test_f1(y_true, y_pred):
+            score = f1_score(y_true, y_pred)
+    """))
+    assert "C33" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c33_score_asserted_clean(tmp_path):
+    f = _write(tmp_path / "test_c33d.py", textwrap.dedent("""
+        def test_model_quality(model, X_test, y_test):
+            acc = model.score(X_test, y_test)
+            assert acc >= 0.8
+    """))
+    assert "C33" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c33_accuracy_asserted_clean(tmp_path):
+    f = _write(tmp_path / "test_c33e.py", textwrap.dedent("""
+        from sklearn.metrics import accuracy_score
+
+        def test_accuracy(y_true, y_pred):
+            score = accuracy_score(y_true, y_pred)
+            assert score > 0.9
+    """))
+    assert "C33" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c33_is_low_confidence(tmp_path):
+    f = _write(tmp_path / "test_c33f.py", textwrap.dedent("""
+        from sklearn.metrics import f1_score
+
+        def test_f1(y_true, y_pred):
+            f1_score(y_true, y_pred)
+    """))
+    findings = [a for a in analyze_file(str(f)) if a.code == "C33"]
+    assert findings and findings[0].conf == "low"
