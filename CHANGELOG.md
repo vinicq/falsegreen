@@ -7,6 +7,25 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- C23 (LOW): test opens a real file at a hard-coded literal path — `open("path/to/file")`,
+  `Path("literal").read_text()`, or `Path("literal").read_bytes()`. A hard-coded path ties
+  the test to a specific directory layout and is often a credential file or a fixture that
+  lives outside the repo (Mystery Guest, J6).
+- D1 (off by default, `info` severity): 2+ assertions in one test where every `assert`
+  omits the `msg` argument. When the test fails, pytest cannot report which assertion
+  triggered it (Assertion Roulette, J4). Enable with `D1 = "info"` in
+  `[tool.falsegreen.severity]`.
+- D3 (off by default, `info` severity): the same assertion written twice in the same test
+  body. The duplicate adds no coverage (Duplicate Assert, J4). Enable with `D3 = "info"`.
+- M2 (off by default, `info` severity): test body exceeds the configured line-count limit
+  (Long Test Method, J5). Enable with `M2 = "info"`. Default limit is 50 lines; override
+  with `long_test_threshold = N` at the top level of `[tool.falsegreen]`, not inside
+  `[severity]`.
+- `info` severity level: a new severity below `low`. Info findings appear in separate
+  DIAGNOSTIC and COUPLING output sections and leave the exit code at 0. Existing HIGH,
+  LOW, and OFF behaviour is unchanged.
+- `long_test_threshold` config key: integer, default 50. Top-level key in
+  `[tool.falsegreen]`; controls the line-count threshold for M2.
 - `freezegun` and `time_machine` imports suppress C16 clock-read findings in the
   same file (`TIME_CONTROL_IMPORTS` + `file_controls_time()` check): when a file
   controls time externally, `datetime.now()`/`time.time()` calls inside tests are

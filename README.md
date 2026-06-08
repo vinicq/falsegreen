@@ -14,12 +14,14 @@ is what a green test that never fails gives you. AI coding assistants produce th
 tool catches them in two layers.
 
 The scanner is a zero-dependency AST pass that runs on every commit. It validates
-each test against twenty-one mechanical codes, the ones a parser can prove:
-an assertion that never runs, a check that is empty or always true, a swallowed
-exception, a mock of the unit under test, an assertion stranded in dead code, a
-weak truthiness check, an async test that never awaits. High-confidence findings
-block the commit; the rest warn. The semantic layer (judging whether each test
-asserts the right value against intended behavior) lives in
+each test against twenty-three mechanical false-positive codes, the ones a parser
+can prove: an assertion that never runs, a check that is empty or always true, a
+swallowed exception, a mock of the unit under test, an assertion stranded in dead
+code, a weak truthiness check, an async test that never awaits, a test that opens
+a hard-coded file path. High-confidence findings block the commit; low-confidence
+ones warn; a third optional group (diagnostic and coupling) reports informational
+findings that do not affect the exit code. The semantic layer (judging whether
+each test asserts the right value against intended behavior) lives in
 [falsegreen-skill](https://github.com/vinicq/falsegreen-skill), the companion
 LLM-based tool that covers Python and other languages.
 
@@ -126,11 +128,13 @@ and the specific thing falsegreen took from each one, is in [CREDITS.md](CREDITS
 
 ## What it validates, how, and why
 
-The catalog has 18 named cases across the five families. The scanner ships 21 codes
-covering all mechanically-detectable patterns. Cases that require reading production
-intent (10, 11, 12, 15, 18) are handled by
+The catalog has 18 named false-positive cases across the five families. The scanner
+ships 23 codes covering all mechanically-detectable false-positive patterns, plus
+three optional diagnostic and coupling codes described below. Cases that require
+reading production intent (10, 11, 12, 15, 18) are handled by
 [falsegreen-skill](https://github.com/vinicq/falsegreen-skill). HIGH-confidence
-scanner findings block a commit; LOW ones warn.
+scanner findings block a commit; LOW ones warn; `info` findings are informational
+and do not affect the exit code.
 
 | # | Case | Why it fools you | Detected by | Conf |
 |---|---|---|---|---|
@@ -153,7 +157,7 @@ scanner findings block a commit; LOW ones warn.
 | 17 | `skip` inside a broad `except` | turns red into yellow, hides the defect | `C17` | HIGH |
 | 18 | Expected value contradicts what the code should do | freezes a bug as "correct" | semantic | - |
 
-Five codes added after the original eighteen, each in an existing family:
+Six codes added after the original eighteen, each in an existing family:
 
 | Code | Pattern | Why it fools you | Family | Conf |
 |---|---|---|---|---|
@@ -162,8 +166,22 @@ Five codes added after the original eighteen, each in an existing family:
 | `C20` | `assert` in dead code after `return`/`raise`/`fail()` | the check never runs | A | HIGH |
 | `C21` | Every `assert` is conditional, none runs unconditionally | a false condition passes the whole test | A | LOW |
 | `C22` | `async` test asserts but never awaits the unit | the assertion checks an un-awaited coroutine | A | off by default |
+| `C23` | Test opens a real file at a hard-coded literal path | binds the test to a specific layout; often a credential outside the repo (Mystery Guest) | D | LOW |
 
 (`CC`, a commented-out `assert`, is also flagged LOW.)
+
+### Diagnostic and coupling codes (opt-in, informational)
+
+Three additional codes surface smells that do not create false positives but hurt
+observability and maintainability. They are **off by default**. Enable them by setting
+their severity to `info` in config. `info` findings appear in separate output sections
+and leave the exit code at 0.
+
+| Code | Smell | What it flags | Enable |
+|---|---|---|---|
+| `D1` | Assertion Roulette | 2+ assertions in one test, all without a `msg` argument; when the test fails, pytest cannot report which assertion triggered it | `D1 = "info"` |
+| `D3` | Duplicate Assert | the same assertion written twice in the same test body | `D3 = "info"` |
+| `M2` | Long Test Method | test body exceeds `long_test_threshold` lines (default 50) | `M2 = "info"` |
 
 **How the scanner detects.** It parses each test file with Python's `ast` module
 and inspects the tree. It never imports or runs the test, so a malicious or broken
@@ -251,7 +269,7 @@ that maintainability layer well; run them alongside falsegreen.
 
 | Layer | What it is | When it runs | Catches |
 |---|---|---|---|
-| **Scanner** (this repo) | Zero-dependency AST analysis (Python/pytest) | CLI, CI, pre-commit | 21 mechanical codes |
+| **Scanner** (this repo) | Zero-dependency AST analysis (Python/pytest) | CLI, CI, pre-commit | 23 false-positive codes + 3 opt-in diagnostic/coupling codes |
 | **Semantic pass** ([falsegreen-skill](https://github.com/vinicq/falsegreen-skill)) | LLM-based analysis, Python + other languages | on demand | bug-freezing patterns no static tool can see (cases 10/11/12/15/18) |
 
 The scanner is the fast, deterministic pre-filter. It overlaps in part with
@@ -344,17 +362,23 @@ at the repo root (the `.falsegreen.toml` wins if both exist):
 [tool.falsegreen]
 disable = ["C13b"]          # turn these codes off everywhere
 exclude = ["tests/legacy/*"] # skip files matching these globs
+long_test_threshold = 30    # line-count limit for M2 (default: 50)
 
 [tool.falsegreen.severity]
 C8 = "high"                  # promote: now blocks the commit (exit 20)
 C6 = "off"                   # same as adding C6 to disable
+D1 = "info"                  # enable Assertion Roulette (informational, exit 0)
+D3 = "info"                  # enable Duplicate Assert
+M2 = "info"                  # enable Long Test Method
 ```
 
-`severity` values are `high`, `low`, or `off`. Precedence, highest first:
-`--disable` on the CLI, then the inline `# falsegreen: ignore`, then this config,
-then the built-in default. Point at a specific file with `--config PATH`. The
-config reader uses the standard library on Python 3.11+ and `tomli` on older
-versions; on 3.8 without `tomli` it is a silent no-op.
+`severity` values are `high`, `low`, `info`, or `off`. `info` findings appear in
+DIAGNOSTIC or COUPLING output sections and do not affect the exit code. `long_test_threshold`
+is a top-level key in `[tool.falsegreen]`, not inside `[severity]`. Precedence, highest
+first: `--disable` on the CLI, then the inline `# falsegreen: ignore`, then this config,
+then the built-in default. Point at a specific file with `--config PATH`. The config reader
+uses the standard library on Python 3.11+ and `tomli` on older versions; on 3.8 without
+`tomli` it is a silent no-op.
 
 ### Baseline (adopt on a legacy repo without blocking day one)
 
