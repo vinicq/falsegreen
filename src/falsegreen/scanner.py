@@ -100,6 +100,8 @@ CASES = {
     "C33": ("sklearn metric result never asserted — model performance computed but no threshold checked", "low", "J4"),
     "C34": ("suboptimal assert form — a simpler, more idiomatic alternative exists", "low", "J4"),
     "C35": ("retry/repeat/flaky decorator masks flaky behaviour instead of fixing it", "low", "J1"),
+    "C36": ("pytest.fail() called without a reason — the failure message is empty", "low", "J4"),
+    "C37": ("duplicate test case in @pytest.mark.parametrize — same argument set runs the same scenario twice", "low", "J4"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
     # --- diagnostic group (readability / observability; default off) ----------
     "D1":  ("multiple assertions without messages (assertion roulette)", "off", "J4"),
@@ -1492,6 +1494,19 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             findings.append(Finding(file, d.lineno, "D4",
                                     "%d cases without ids=" % len(cases_arg.elts)))
 
+        # C37: duplicate case in the same @pytest.mark.parametrize call.
+        # ast.dump() gives a canonical string for any AST subtree; if two
+        # elements produce the same dump the argument sets are identical.
+        if isinstance(cases_arg, (ast.List, ast.Tuple)):
+            _seen: dict[str, int] = {}
+            for _elt in cases_arg.elts:
+                _key = ast.dump(_elt)
+                if _key in _seen:
+                    findings.append(Finding(file, d.lineno, "C37",
+                                            "duplicate parametrize case — same argument set runs the same scenario twice"))
+                    break
+                _seen[_key] = 1
+
     # C30: responses.add() / httpretty.register_uri() without activating the library
     # interceptor. Without @responses.activate (or an equivalent context manager), the
     # mock response is registered but HTTP calls bypass it and hit the real network.
@@ -1607,6 +1622,18 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             if n_lines > long_test_threshold:
                 findings.append(Finding(file, line, "M2",
                                         "%d lines (threshold: %d)" % (n_lines, long_test_threshold)))
+
+    # C36: pytest.fail() with no reason. An empty failure message leaves no
+    # clue for the developer who sees the red build. At minimum add a short
+    # string explaining what invariant was violated.
+    for n in children_no_nesting(func):
+        if not (isinstance(n, ast.Call) and
+                dotted_name(n.func) == "pytest.fail"):
+            continue
+        if n.args or any(kw.arg in ("reason", "msg") for kw in n.keywords):
+            continue
+        findings.append(Finding(file, n.lineno, "C36",
+                                "add a descriptive reason to pytest.fail()"))
 
     # D6: print() calls in a test body. Print statements left after debugging
     # bypass the test oracle: they produce output but check nothing, and pollute

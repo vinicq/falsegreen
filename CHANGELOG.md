@@ -7,6 +7,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- C37 (LOW): duplicate test case in `@pytest.mark.parametrize`. When the same
+  argument set appears more than once in the case list — e.g.
+  `parametrize("x", [1, 2, 1])` — the repeated case runs the exact same
+  scenario twice: no extra coverage, just redundant CI time. Detected by
+  comparing the canonical AST dump of each element; works for scalars,
+  strings, tuples, and nested structures.
+- C36 (LOW): `pytest.fail()` called without a reason argument. A bare
+  `pytest.fail()` leaves the build log with an empty failure message, giving
+  no context about what invariant was violated. Pass a descriptive string as
+  the first positional argument or as `reason=`. The check fires when neither
+  a positional argument nor `reason=`/`msg=` keyword is present; it does not
+  fire for `from pytest import fail; fail("message")` calls.
 - C35 (LOW): `@pytest.mark.flaky`, `@pytest.mark.repeat`, `@pytest.mark.retry`,
   `@pytest.mark.rerun`, or equivalent decorator present on the test. Retrying
   a test until it passes hides flaky behaviour instead of fixing it. The root

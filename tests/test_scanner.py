@@ -2586,3 +2586,100 @@ def test_c16_tf_random_with_set_seed_clean(tmp_path):
             assert result.shape == (10, 3)
     """))
     assert "C16" not in {a.code for a in analyze_file(str(f))}
+
+
+# ---------------------------------------------------------------------------
+# C36: pytest.fail() without a reason
+# ---------------------------------------------------------------------------
+
+def test_c36_fail_no_reason_fires(tmp_path):
+    f = _write(tmp_path / "test_c36a.py", textwrap.dedent("""
+        import pytest
+
+        def test_branch():
+            if compute() < 0:
+                pytest.fail()
+    """))
+    assert "C36" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c36_fail_with_positional_reason_clean(tmp_path):
+    f = _write(tmp_path / "test_c36b.py", textwrap.dedent("""
+        import pytest
+
+        def test_branch():
+            if compute() < 0:
+                pytest.fail("expected non-negative result")
+    """))
+    assert "C36" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c36_fail_with_reason_kwarg_clean(tmp_path):
+    f = _write(tmp_path / "test_c36c.py", textwrap.dedent("""
+        import pytest
+
+        def test_branch():
+            if compute() < 0:
+                pytest.fail(reason="expected non-negative result")
+    """))
+    assert "C36" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c36_is_low_confidence(tmp_path):
+    f = _write(tmp_path / "test_c36d.py", textwrap.dedent("""
+        import pytest
+
+        def test_branch():
+            pytest.fail()
+    """))
+    findings = [a for a in analyze_file(str(f)) if a.code == "C36"]
+    assert findings and findings[0].conf == "low"
+
+
+# ---------------------------------------------------------------------------
+# C37: duplicate parametrize case
+# ---------------------------------------------------------------------------
+
+def test_c37_duplicate_int_fires(tmp_path):
+    f = _write(tmp_path / "test_c37a.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.parametrize("x", [1, 2, 1])
+        def test_positive(x):
+            assert x > 0
+    """))
+    assert "C37" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c37_duplicate_tuple_fires(tmp_path):
+    f = _write(tmp_path / "test_c37b.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.parametrize("x,y", [(1, "a"), (2, "b"), (1, "a")])
+        def test_pair(x, y):
+            assert x > 0
+    """))
+    assert "C37" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c37_no_duplicates_clean(tmp_path):
+    f = _write(tmp_path / "test_c37c.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.parametrize("x", [1, 2, 3])
+        def test_positive(x):
+            assert x > 0
+    """))
+    assert "C37" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c37_is_low_confidence(tmp_path):
+    f = _write(tmp_path / "test_c37d.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.parametrize("x", [5, 5])
+        def test_val(x):
+            assert x > 0
+    """))
+    findings = [a for a in analyze_file(str(f)) if a.code == "C37"]
+    assert findings and findings[0].conf == "low"
