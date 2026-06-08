@@ -7,6 +7,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- C35 (LOW): `@pytest.mark.flaky`, `@pytest.mark.repeat`, `@pytest.mark.retry`,
+  `@pytest.mark.rerun`, or equivalent decorator present on the test. Retrying
+  a test until it passes hides flaky behaviour instead of fixing it. The root
+  cause — non-determinism, race condition, test-order dependency — stays in the
+  SUT and the suite reports green by chance. Remove the decorator and fix the
+  underlying issue; if the flakiness is expected and intentional, add a comment
+  explaining why. Fires for both bare marker usage (`@pytest.mark.flaky`) and
+  parametrised form (`@pytest.mark.flaky(reruns=3)`).
+- C16 now also fires for PyTorch and TensorFlow random operations without a
+  fixed seed. `torch.rand`, `torch.randn`, `torch.randint`, and the other
+  PyTorch random-tensor functions require `torch.manual_seed()` in the same
+  test to produce deterministic output. `tf.random.normal`, `tf.random.uniform`,
+  and the other TensorFlow random ops require `tf.random.set_seed()`.
+  Both checks respect any call matching `manual_seed` or `set_seed` as an alias.
 - D6 (off by default, `info` severity): `print()` call in test body — debug
   artifact that bypasses the test oracle. Print statements left after debugging
   produce CI noise but check nothing; remove or replace with an assertion.

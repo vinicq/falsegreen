@@ -99,6 +99,7 @@ CASES = {
     "C32": ("@pytest.mark.skip without reason= — test silently excluded with no documented motive", "low", "J1"),
     "C33": ("sklearn metric result never asserted — model performance computed but no threshold checked", "low", "J4"),
     "C34": ("suboptimal assert form — a simpler, more idiomatic alternative exists", "low", "J4"),
+    "C35": ("retry/repeat/flaky decorator masks flaky behaviour instead of fixing it", "low", "J1"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
     # --- diagnostic group (readability / observability; default off) ----------
     "D1":  ("multiple assertions without messages (assertion roulette)", "off", "J4"),
@@ -175,6 +176,25 @@ ML_METRIC_FUNCTIONS = {
 }
 # Estimator methods that return a scalar performance score.
 ML_SCORE_METHODS = {"score"}
+
+# PyTorch functions that produce random tensors. Without torch.manual_seed()
+# (or torch.use_deterministic_algorithms(True)) somewhere in the test, the
+# output changes between runs, making the test non-deterministic (C16).
+TORCH_RANDOM_CALLS = {
+    "rand", "randn", "randint", "randperm", "bernoulli",
+    "multinomial", "normal", "poisson", "exponential",
+}
+# TensorFlow random ops. Without tf.random.set_seed() the graph-level seed is
+# unset and results differ across runs.
+TF_RANDOM_CALLS = {
+    "normal", "uniform", "shuffle", "categorical",
+    "truncated_normal", "stateless_normal", "stateless_uniform",
+}
+
+# Decorator leaf names that indicate a retry/repeat loop. These make a test
+# pass on the Nth attempt and report green, masking a flaky SUT instead of
+# fixing the root cause.
+RETRY_MARKER_NAMES = {"flaky", "repeat", "retry", "rerun", "flake"}
 
 IGNORED_DIRS = {
     ".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules",
@@ -1175,6 +1195,16 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                                     "add reason= to document why the test is skipped"))
             break
 
+    # C35: retry/repeat/flaky decorator — the test is re-run on failure until it
+    # passes, which can make a genuinely flaky SUT appear green. Retries should be
+    # a temporary workaround at most; the root cause (non-determinism, race
+    # condition, test-order dependency) should be fixed instead.
+    for d in func.decorator_list:
+        if _is_retry_marker(d):
+            findings.append(Finding(file, line, "C35",
+                                    "fix the flakiness instead of retrying"))
+            break
+
     body_intentionally_empty = (has_property_test_decorator(func)
                                 or has_skip_decorator(func) or skip_exempt)
     if not has_assertion(func) and not body_intentionally_empty:
@@ -1299,12 +1329,15 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                 findings.append(Finding(file, n.lineno, "C9", "raises(Exception) without match"))
 
     has_seed = any(
-        is_call_to(c, "random.seed", "seed", "np.random.seed")
+        is_call_to(c, "random.seed", "seed", "np.random.seed",
+                   "torch.manual_seed", "manual_seed",
+                   "tf.random.set_seed", "set_seed")
         for c in ast.walk(func) if isinstance(c, ast.Call)
     )
     for n in children_no_nesting(func):
         if isinstance(n, ast.Call):
             target = dotted_name(n.func)
+            last = target.split(".")[-1]
             if target.endswith("time.sleep") or target.endswith("sleep"):
                 findings.append(Finding(file, n.lineno, "C16", "fixed sleep"))
             elif not controls_time and (
@@ -1319,6 +1352,14 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                     and not any(kw.arg == "random_state" for kw in n.keywords):
                 findings.append(Finding(file, n.lineno, "C16",
                                         "train_test_split without random_state — non-deterministic split"))
+            elif target.startswith("torch.") and last in TORCH_RANDOM_CALLS \
+                    and not has_seed:
+                findings.append(Finding(file, n.lineno, "C16",
+                                        "PyTorch randomness without torch.manual_seed"))
+            elif target.startswith("tf.random.") and last in TF_RANDOM_CALLS \
+                    and not has_seed:
+                findings.append(Finding(file, n.lineno, "C16",
+                                        "TensorFlow randomness without tf.random.set_seed"))
 
     for n in children_no_nesting(func):
         if isinstance(n, ast.If) and isinstance(n.test, ast.UnaryOp) \
@@ -1695,6 +1736,16 @@ def _is_skip_without_reason(decorator):
         if kw.arg == "reason":
             return False
     return True
+
+
+def _is_retry_marker(decorator):
+    """True if the decorator marks the test for automatic retry on failure.
+
+    Covers @pytest.mark.flaky, @pytest.mark.repeat, @flaky, @retry, etc.
+    A retry loop makes the test report green on the Nth attempt, masking a
+    flaky SUT instead of surfacing the root cause."""
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    return dotted_name(target).split(".")[-1] in RETRY_MARKER_NAMES
 
 
 def _suboptimal_assert_hint(test):

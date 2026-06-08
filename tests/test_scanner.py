@@ -2484,3 +2484,105 @@ def test_d6_off_by_default(tmp_path):
             assert result == 42
     """))
     assert "D6" not in {a.code for a in run([f])}
+
+
+# ---------------------------------------------------------------------------
+# C35: retry/flaky decorator masks flakiness
+# ---------------------------------------------------------------------------
+
+def test_c35_flaky_decorator_fires(tmp_path):
+    f = _write(tmp_path / "test_c35a.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.flaky(reruns=3)
+        def test_network():
+            result = fetch()
+            assert result is not None
+    """))
+    assert "C35" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c35_repeat_decorator_fires(tmp_path):
+    f = _write(tmp_path / "test_c35b.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.repeat(5)
+        def test_timing():
+            result = measure()
+            assert result < 1.0
+    """))
+    assert "C35" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c35_no_retry_clean(tmp_path):
+    f = _write(tmp_path / "test_c35c.py", textwrap.dedent("""
+        def test_stable():
+            assert compute() == 42
+    """))
+    assert "C35" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c35_is_low_confidence(tmp_path):
+    f = _write(tmp_path / "test_c35d.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.flaky
+        def test_thing():
+            assert do_thing() is True
+    """))
+    findings = [a for a in analyze_file(str(f)) if a.code == "C35"]
+    assert findings and findings[0].conf == "low"
+
+
+# ---------------------------------------------------------------------------
+# C16 extension: PyTorch and TensorFlow randomness without seed
+# ---------------------------------------------------------------------------
+
+def test_c16_torch_rand_no_seed_fires(tmp_path):
+    f = _write(tmp_path / "test_c16torch.py", textwrap.dedent("""
+        import torch
+
+        def test_model_output():
+            x = torch.rand(10)
+            result = model(x)
+            assert result.shape == (10,)
+    """))
+    assert "C16" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c16_torch_rand_with_manual_seed_clean(tmp_path):
+    f = _write(tmp_path / "test_c16torch2.py", textwrap.dedent("""
+        import torch
+
+        def test_model_output():
+            torch.manual_seed(42)
+            x = torch.rand(10)
+            result = model(x)
+            assert result.shape == (10,)
+    """))
+    assert "C16" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c16_tf_random_no_seed_fires(tmp_path):
+    f = _write(tmp_path / "test_c16tf.py", textwrap.dedent("""
+        import tensorflow as tf
+
+        def test_layer_output():
+            x = tf.random.normal([10, 5])
+            result = layer(x)
+            assert result.shape == (10, 3)
+    """))
+    assert "C16" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c16_tf_random_with_set_seed_clean(tmp_path):
+    f = _write(tmp_path / "test_c16tf2.py", textwrap.dedent("""
+        import tensorflow as tf
+
+        def test_layer_output():
+            tf.random.set_seed(0)
+            x = tf.random.normal([10, 5])
+            result = layer(x)
+            assert result.shape == (10, 3)
+    """))
+    assert "C16" not in {a.code for a in analyze_file(str(f))}
