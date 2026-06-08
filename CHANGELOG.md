@@ -7,6 +7,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- D4 (off by default, `info` severity): `@pytest.mark.parametrize` with more than two
+  cases and no `ids=` argument. Without ids, pytest names each case `test_foo[0]`,
+  `test_foo[1]`, etc. — the failing case cannot be identified from the test name alone.
+  Enable with `D4 = "info"` in `[tool.falsegreen.severity]`. Add
+  `ids=["name1", "name2", ...]` or a callable to label each case.
+- C32 (LOW): `@pytest.mark.skip` without `reason=`. An undocumented skip makes it
+  impossible to know when the test should be re-enabled and may mask a permanently
+  broken suite. Add `reason="<why>"` or remove the skip entirely. Applies at both
+  function and class level. Does not flag `skipif`/`skipUnless`, which carry a
+  condition by design.
+- C31 (LOW): `capsys.readouterr()` (or `capfd.readouterr()`) called in a test where
+  the result is never asserted. The test captures stdout/stderr but checks nothing
+  about the content — the capture has no effect on pass/fail. Either assert on the
+  captured output (`assert captured.out == "..."`) or remove the call.
 - C30 (LOW): `responses.add()` or `httpretty.register_uri()` called in a test without
   activating the library's HTTP interceptor (`@responses.activate`, `@httpretty.activate`,
   or an equivalent context manager). Without activation the mock is registered but every

@@ -95,10 +95,13 @@ CASES = {
     "C28": ("pytest.raises binding declared but exception content never inspected", "low", "J4"),
     "C29": ("os.environ assigned directly in a test — env state leaks between tests", "low", "J6"),
     "C30": ("responses.add() / httpretty.register_uri() without activating the interceptor", "low", "J3"),
+    "C31": ("capsys/capfd.readouterr() result never asserted — stdout/stderr captured but not checked", "low", "J4"),
+    "C32": ("@pytest.mark.skip without reason= — test silently excluded with no documented motive", "low", "J1"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
     # --- diagnostic group (readability / observability; default off) ----------
     "D1":  ("multiple assertions without messages (assertion roulette)", "off", "J4"),
     "D3":  ("identical assertion repeated in the same test (duplicate assert)", "off", "J4"),
+    "D4":  ("@pytest.mark.parametrize without ids= — failing case identified only by index", "off", "J4"),
     # --- coupling group (fragility / maintainability; default off) ------------
     "M2":  ("test method body exceeds the configured line-count threshold", "off", "J5"),
 }
@@ -1131,6 +1134,16 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                                     "add strict=True or convert to skip if permanently broken"))
             break
 
+    # C32: @pytest.mark.skip (or bare @skip) without reason= — the test is
+    # excluded indefinitely with no documented motive. Without a reason, there
+    # is no signal for when it should be re-enabled, so broken suites can
+    # accumulate silently. Add reason="<why>" or remove the skip entirely.
+    for d in func.decorator_list:
+        if _is_skip_without_reason(d):
+            findings.append(Finding(file, line, "C32",
+                                    "add reason= to document why the test is skipped"))
+            break
+
     body_intentionally_empty = (has_property_test_decorator(func)
                                 or has_skip_decorator(func) or skip_exempt)
     if not has_assertion(func) and not body_intentionally_empty:
@@ -1381,6 +1394,25 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
         else:
             _seen_dumps[dump] = n.lineno
 
+    # D4: @pytest.mark.parametrize with more than 2 cases and no ids= argument.
+    # Without ids=, pytest names cases test_foo[0], test_foo[1], etc.; the failing
+    # case cannot be identified from the test name alone. Add ids= with short
+    # descriptive strings, or a callable that names each case.
+    for d in func.decorator_list:
+        if not isinstance(d, ast.Call):
+            continue
+        dn = dotted_name(d.func)
+        if dn not in ("pytest.mark.parametrize", "mark.parametrize", "parametrize"):
+            continue
+        if any(kw.arg == "ids" for kw in d.keywords if kw.arg):
+            continue
+        if len(d.args) < 2:
+            continue
+        cases_arg = d.args[1]
+        if isinstance(cases_arg, (ast.List, ast.Tuple)) and len(cases_arg.elts) > 2:
+            findings.append(Finding(file, d.lineno, "D4",
+                                    "%d cases without ids=" % len(cases_arg.elts)))
+
     # C30: responses.add() / httpretty.register_uri() without activating the library
     # interceptor. Without @responses.activate (or an equivalent context manager), the
     # mock response is registered but HTTP calls bypass it and hit the real network.
@@ -1416,6 +1448,41 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             for n in children_no_nesting(func):
                 if isinstance(n, ast.Call) and dotted_name(n.func) in RESPONSES_SETUP_CALLS:
                     findings.append(Finding(file, n.lineno, "C30"))
+
+    # C31: capsys/capfd.readouterr() called but its result is never asserted.
+    # The test captures stdout/stderr yet verifies nothing about the content —
+    # the capture has no effect on pass/fail, making the test a false green.
+    # Two patterns: result discarded entirely (bare Expr statement), or result
+    # assigned to a name that never appears inside an assert.
+    _assert_names = {
+        sub.id
+        for node in ast.walk(func)
+        if isinstance(node, ast.Assert)
+        for sub in ast.walk(node.test)
+        if isinstance(sub, ast.Name)
+    }
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Expr) \
+                and isinstance(n.value, ast.Call) \
+                and isinstance(n.value.func, ast.Attribute) \
+                and n.value.func.attr == "readouterr":
+            findings.append(Finding(file, n.lineno, "C31",
+                                    "readouterr() result discarded — nothing is verified"))
+        elif isinstance(n, ast.Assign) \
+                and isinstance(n.value, ast.Call) \
+                and isinstance(n.value.func, ast.Attribute) \
+                and n.value.func.attr == "readouterr":
+            names = set()
+            for tgt in n.targets:
+                if isinstance(tgt, ast.Name):
+                    names.add(tgt.id)
+                elif isinstance(tgt, ast.Tuple):
+                    for elt in tgt.elts:
+                        if isinstance(elt, ast.Name):
+                            names.add(elt.id)
+            if names and not (names & _assert_names):
+                findings.append(Finding(file, n.lineno, "C31",
+                                        "readouterr() result captured but never asserted"))
 
     # M2: test function body exceeds the configured line-count threshold.
     # A very long test almost always does more than one thing, which makes
@@ -1512,6 +1579,25 @@ def _is_xfail_without_strict(decorator):
     return True
 
 
+def _is_skip_without_reason(decorator):
+    """Returns True if the decorator is @pytest.mark.skip (bare @skip or call
+    without reason=). A skip without a reason makes it impossible to know when
+    the test should be re-enabled and may silently hide a permanently broken suite.
+    Does NOT flag skipif/skipUnless — those carry a condition by design."""
+    if isinstance(decorator, ast.Call):
+        target = decorator.func
+        keywords = decorator.keywords
+    else:
+        target = decorator
+        keywords = []
+    if dotted_name(target).split(".")[-1] != "skip":
+        return False
+    for kw in keywords:
+        if kw.arg == "reason":
+            return False
+    return True
+
+
 def has_fixture_decorator(func):
     for d in func.decorator_list:
         target = d.func if isinstance(d, ast.Call) else d
@@ -1582,6 +1668,11 @@ def analyze_file(file, long_test_threshold=50):
                     if _is_xfail_without_strict(d):
                         findings.append(Finding(file, node.lineno, "C25",
                                                 "class-level xfail: add strict=True"))
+                        break
+                for d in node.decorator_list:
+                    if _is_skip_without_reason(d):
+                        findings.append(Finding(file, node.lineno, "C32",
+                                                "class-level skip: add reason= to document why"))
                         break
                 for m in node.body:
                     if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):

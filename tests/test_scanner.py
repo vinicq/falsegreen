@@ -2049,3 +2049,188 @@ def test_c30_is_low_confidence(tmp_path):
     """))
     findings = [a for a in analyze_file(str(f)) if a.code == "C30"]
     assert findings and findings[0].conf == "low"
+
+
+# ---------------------------------------------------------------------------
+# C31: capsys/capfd.readouterr() result never asserted
+# ---------------------------------------------------------------------------
+
+def test_c31_discarded_result_fires(tmp_path):
+    f = _write(tmp_path / "test_c31a.py", textwrap.dedent("""
+        def test_output(capsys):
+            print("hello")
+            capsys.readouterr()
+    """))
+    assert "C31" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c31_captured_not_asserted_fires(tmp_path):
+    f = _write(tmp_path / "test_c31b.py", textwrap.dedent("""
+        def test_output(capsys):
+            print("hello")
+            captured = capsys.readouterr()
+    """))
+    assert "C31" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c31_tuple_not_asserted_fires(tmp_path):
+    f = _write(tmp_path / "test_c31c.py", textwrap.dedent("""
+        def test_output(capsys):
+            print("hello")
+            out, err = capsys.readouterr()
+    """))
+    assert "C31" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c31_captured_asserted_clean(tmp_path):
+    f = _write(tmp_path / "test_c31d.py", textwrap.dedent("""
+        def test_output(capsys):
+            print("hello")
+            captured = capsys.readouterr()
+            assert captured.out == "hello\\n"
+    """))
+    assert "C31" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c31_tuple_asserted_clean(tmp_path):
+    f = _write(tmp_path / "test_c31e.py", textwrap.dedent("""
+        def test_output(capsys):
+            print("hello")
+            out, err = capsys.readouterr()
+            assert out == "hello\\n"
+    """))
+    assert "C31" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c31_is_low_confidence(tmp_path):
+    f = _write(tmp_path / "test_c31f.py", textwrap.dedent("""
+        def test_output(capsys):
+            print("hello")
+            capsys.readouterr()
+    """))
+    findings = [a for a in analyze_file(str(f)) if a.code == "C31"]
+    assert findings and findings[0].conf == "low"
+
+
+# ---------------------------------------------------------------------------
+# C32: @pytest.mark.skip without reason=
+# ---------------------------------------------------------------------------
+
+def test_c32_skip_no_reason_fires(tmp_path):
+    f = _write(tmp_path / "test_c32a.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.skip
+        def test_broken():
+            assert False
+    """))
+    assert "C32" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c32_skip_call_no_reason_fires(tmp_path):
+    f = _write(tmp_path / "test_c32b.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.skip()
+        def test_broken():
+            assert False
+    """))
+    assert "C32" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c32_skip_with_reason_clean(tmp_path):
+    f = _write(tmp_path / "test_c32c.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.skip(reason="needs refactor before re-enabling")
+        def test_broken():
+            assert False
+    """))
+    assert "C32" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c32_skipif_not_flagged(tmp_path):
+    # skipif carries a condition — reason is optional by design there
+    f = _write(tmp_path / "test_c32d.py", textwrap.dedent("""
+        import pytest, sys
+
+        @pytest.mark.skipif(sys.platform == "win32", reason="linux only")
+        def test_posix():
+            assert True
+    """))
+    assert "C32" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c32_class_level_skip_no_reason_fires(tmp_path):
+    f = _write(tmp_path / "test_c32e.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.skip
+        class TestSuite:
+            def test_one(self):
+                assert 1 == 1
+    """))
+    assert "C32" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c32_is_low_confidence(tmp_path):
+    f = _write(tmp_path / "test_c32f.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.skip
+        def test_broken():
+            assert False
+    """))
+    findings = [a for a in analyze_file(str(f)) if a.code == "C32"]
+    assert findings and findings[0].conf == "low"
+
+
+# ---------------------------------------------------------------------------
+# D4: @pytest.mark.parametrize without ids= (more than 2 cases)
+# ---------------------------------------------------------------------------
+
+def test_d4_parametrize_no_ids_fires(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD4 = "info"\n')
+    f = _write(tmp_path / "test_d4a.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.parametrize("x", [1, 2, 3])
+        def test_positive(x):
+            assert x > 0
+    """))
+    assert "D4" in {a.code for a in run([f], config_path=cfg)}
+
+
+def test_d4_two_cases_clean(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD4 = "info"\n')
+    f = _write(tmp_path / "test_d4b.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.parametrize("x", [1, 2])
+        def test_positive(x):
+            assert x > 0
+    """))
+    assert "D4" not in {a.code for a in run([f], config_path=cfg)}
+
+
+def test_d4_with_ids_clean(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD4 = "info"\n')
+    f = _write(tmp_path / "test_d4c.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.parametrize("x", [1, 2, 3], ids=["one", "two", "three"])
+        def test_positive(x):
+            assert x > 0
+    """))
+    assert "D4" not in {a.code for a in run([f], config_path=cfg)}
+
+
+def test_d4_off_by_default(tmp_path):
+    f = _write(tmp_path / "test_d4d.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.parametrize("x", [1, 2, 3])
+        def test_positive(x):
+            assert x > 0
+    """))
+    assert "D4" not in {a.code for a in run([f])}
