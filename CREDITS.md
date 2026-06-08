@@ -1,8 +1,9 @@
 # Credits and academic references
 
 falsegreen builds on published research in test smells and rotten green tests. The
-work below shaped its concepts, its rule catalog, and the design of its two layers
-(deterministic scanner plus an LLM semantic pass). Credit to the authors.
+work below shaped its concepts, its rule catalog, and the design of the deterministic
+scanner. The LLM semantic pass and multi-language support live in
+[falsegreen-skill](https://github.com/vinicq/falsegreen-skill). Credit to the authors.
 
 ## Conceptual foundation
 
@@ -42,8 +43,9 @@ Marcelo d'Amorim, Márcio Ribeiro, Gustavo Soares
 ([@gustavoasoares](https://github.com/gustavoasoares)), Eduardo Almeida, Elvys
 Soares ([@elvyssoares](https://github.com/elvyssoares)). SBES 2025. arXiv:2504.07277. Empirical evidence that small local models in
 agent-based workflows detect and refactor test smells (Phi-4-14B, pass@5 of 75.3%;
-six generated pull requests merged into open-source projects). Backs falsegreen's
-LLM semantic pass and the AI-applies-the-fix path of the dual-use report.
+six generated pull requests merged into open-source projects). Backs
+[falsegreen-skill](https://github.com/vinicq/falsegreen-skill)'s LLM semantic pass
+and the AI-applies-the-fix path of the dual-use report.
 
 **Evaluating LLMs Effectiveness in Detecting and Correcting Test Smells: An
 Empirical Study.** E. G. Santana Jr., Jander Pereira Santos Junior, Erlon P.
@@ -58,8 +60,9 @@ and its multi-agent verify idea.
 **Evaluating Large Language Models in Detecting Test Smells.** Keila Lucas, Rohit
 Gheyi, Elvys Soares, Márcio Ribeiro, Ivan Machado. SBES 2024. arXiv:2407.19261.
 LLMs detected 21 of 30 test smell types across seven languages (ChatGPT-4 best).
-Backs falsegreen's choice to handle cross-language coverage in the language-agnostic
-semantic pass rather than in the Python-only scanner.
+Backs [falsegreen-skill](https://github.com/vinicq/falsegreen-skill)'s choice to handle
+cross-language coverage in the language-agnostic semantic pass rather than in the
+Python-only scanner.
 
 **Test smells in LLM-Generated Unit Tests.** Wendkûuni C. Ouédraogo, Yinghua Li,
 Xueqi Dang, Xunzhu Tang, Anil Koyuncu, Jacques Klein, David Lo, Tegawendé F.
@@ -82,7 +85,7 @@ Dalton Nicodemos Jorge ([@daltonjorge](https://github.com/daltonjorge)). PhD the
 UFCG, 2023. Advisors Patrícia D. L. Machado, Wilkerson L. Andrade. Tool STEEL:
 <https://github.com/daltonjorge/steel>. Its JavaScript Exception Test smell (a
 `try/catch` that swallows the thrown error) and assertion-in-`forEach`-over-empty
-sharpened the skill's "Frontend cues by language" with two J1 cues for Jest/Vitest.
+sharpened falsegreen-skill's "Frontend cues by language" with two J1 cues for Jest/Vitest.
 
 **Detecção de smells em testes automatizados em diferentes linguagens de
 programação.** Gustavo Augusto Calazans Lopes. TCC, UFAL, 2023. Advisor Márcio de

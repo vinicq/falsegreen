@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-06-08
+
+### Changed
+- Skill and Claude plugin removed from this repo — the LLM semantic pass, the
+  detection reference, and multi-language support now live in
+  [falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
+- README, CONTRIBUTING, and CREDITS updated to reflect the split.
+
 ## [0.2.1] - 2026-06-08
 
 ### Fixed
@@ -79,18 +87,17 @@ First release.
 - C20 (HIGH): assertion in dead code after `return`/`raise`/`fail()`. C21 (LOW):
   every assertion conditional, none runs unconditionally. Both from the rotten-
   green-test line of work (Soares 2023).
-- Claude Code skill (`/falsegreen`) for the semantic pass: judges a test's
-  expected value against intended behavior using an oracle hierarchy and a
-  test-intent classification step (catches cases 12 and 18).
-- Distribution as a pip package, a `pre-commit` hook, and a Claude plugin.
-- Plain-language guide (`docs/guide.md`), detection reference, and a demo file.
+- Distribution as a pip package and a `pre-commit` hook.
+- Plain-language guide (`docs/guide.md`); the detection reference and LLM semantic
+  pass live in [falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
 
 ### Validated
 - Two real-project passes (bailiff, md-bridge) settled the rules and fixed three
   false positives: C6 on called boolean predicates, C1 on literal-collection
   loops, and C7 on `f() is f()` (the lru_cache / singleton identity test).
 
-[Unreleased]: https://github.com/vinicq/falsegreen/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/vinicq/falsegreen/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/vinicq/falsegreen/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/vinicq/falsegreen/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/vinicq/falsegreen/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/vinicq/falsegreen/releases/tag/v0.1.0
