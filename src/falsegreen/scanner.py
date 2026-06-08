@@ -98,11 +98,13 @@ CASES = {
     "C31": ("capsys/capfd.readouterr() result never asserted — stdout/stderr captured but not checked", "low", "J4"),
     "C32": ("@pytest.mark.skip without reason= — test silently excluded with no documented motive", "low", "J1"),
     "C33": ("sklearn metric result never asserted — model performance computed but no threshold checked", "low", "J4"),
+    "C34": ("suboptimal assert form — a simpler, more idiomatic alternative exists", "low", "J4"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
     # --- diagnostic group (readability / observability; default off) ----------
     "D1":  ("multiple assertions without messages (assertion roulette)", "off", "J4"),
     "D3":  ("identical assertion repeated in the same test (duplicate assert)", "off", "J4"),
     "D4":  ("@pytest.mark.parametrize without ids= — failing case identified only by index", "off", "J4"),
+    "D5":  ("too many inline setup statements before first assert — consider extracting a fixture", "off", "J5"),
     # --- coupling group (fragility / maintainability; default off) ------------
     "M2":  ("test method body exceeds the configured line-count threshold", "off", "J5"),
 }
@@ -186,7 +188,8 @@ IGNORE_RE = re.compile(r"#\s*falsegreen:\s*ignore(?:\[([A-Za-z0-9, ]+)\])?")
 # Config file ([tool.falsegreen] in pyproject.toml, or .falsegreen.toml)
 # ---------------------------------------------------------------------------
 SEVERITY_VALUES = {"high", "low", "info", "off"}
-EMPTY_CONFIG = {"disable": set(), "exclude": [], "severity": {}, "long_test_threshold": 50}
+EMPTY_CONFIG = {"disable": set(), "exclude": [], "severity": {}, "long_test_threshold": 50,
+                "inline_setup_threshold": 5}
 
 
 def _read_toml(path):
@@ -222,8 +225,18 @@ def _normalize_config(data):
             sys.stderr.write(
                 "falsegreen: ignoring invalid long_test_threshold %r (must be an integer)\n"
                 % raw_thresh)
+    inline_setup_threshold = 5
+    raw_setup = data.get("inline_setup_threshold")
+    if raw_setup is not None:
+        try:
+            inline_setup_threshold = int(raw_setup)
+        except (ValueError, TypeError):
+            sys.stderr.write(
+                "falsegreen: ignoring invalid inline_setup_threshold %r (must be an integer)\n"
+                % raw_setup)
     return {"disable": disable, "exclude": exclude, "severity": severity,
-            "long_test_threshold": long_test_threshold}
+            "long_test_threshold": long_test_threshold,
+            "inline_setup_threshold": inline_setup_threshold}
 
 
 def load_config(start=None, explicit=None):
@@ -1138,7 +1151,8 @@ def looks_like_forgotten_nested_test(func, scope):
 
 
 def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
-                     file_layer="logic", controls_time=False, long_test_threshold=50):
+                     file_layer="logic", controls_time=False, long_test_threshold=50,
+                     inline_setup_threshold=5):
     line = func.lineno
     mock_names = gather_mock_names(func)
     ctx = detect_test_context(func, file_layer)
@@ -1190,6 +1204,9 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                 weak = assert_weak(test, ctx)
                 if weak:
                     findings.append(Finding(file, n.lineno, "C6", weak))
+                hint = _suboptimal_assert_hint(test)
+                if hint:
+                    findings.append(Finding(file, n.lineno, "C34", hint))
 
     # C21: every assertion in the test is conditional and none runs
     # unconditionally, so a false condition at runtime makes the whole test pass
@@ -1549,6 +1566,24 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                 findings.append(Finding(file, line, "M2",
                                         "%d lines (threshold: %d)" % (n_lines, long_test_threshold)))
 
+    # D5: too many inline setup statements before the first assert. A test that
+    # creates objects and transforms data directly in its body, rather than
+    # delegating to a fixture, tangles the "arrange" and "act" phases and makes
+    # it hard to see what is actually under test.
+    if inline_setup_threshold > 0:
+        _setup_n = 0
+        for _stmt in func.body:
+            if isinstance(_stmt, ast.Assert):
+                if _setup_n >= inline_setup_threshold:
+                    findings.append(Finding(file, line, "D5",
+                                            "%d setup statements before first assert"
+                                            % _setup_n))
+                break
+            if isinstance(_stmt, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                _setup_n += 1
+            elif isinstance(_stmt, ast.Expr) and isinstance(_stmt.value, ast.Call):
+                _setup_n += 1
+
 
 # ---------------------------------------------------------------------------
 # Per-file analysis
@@ -1652,6 +1687,65 @@ def _is_skip_without_reason(decorator):
     return True
 
 
+def _suboptimal_assert_hint(test):
+    """If `test` is a known suboptimal assert form, return a short hint; else None.
+
+    Patterns (TS11 / detectable subset of TS05):
+    - `assert not x in y`   →  use `assert x not in y`
+    - `assert len(x) == 0`  →  use `assert not x`
+    - `assert x == True`    →  use `assert x`
+    - `assert x == False`   →  use `assert not x`
+    - `assert x == None`    →  use `assert x is None`
+    - `assert x != None`    →  use `assert x is not None`
+    Literal on either side is checked (e.g. `True == x` also triggers).
+    Does not fire when C5/C7 already own the node (called only in their else branch).
+    """
+    # assert not (x in y)  →  assert x not in y
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        inner = test.operand
+        if isinstance(inner, ast.Compare) and len(inner.ops) == 1 \
+                and isinstance(inner.ops[0], ast.In):
+            return "use `assert x not in y` instead of `assert not x in y`"
+
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1):
+        return None
+
+    op, left, right = test.ops[0], test.left, test.comparators[0]
+
+    # assert len(x) == 0  /  assert 0 == len(x)
+    if isinstance(op, ast.Eq):
+        if isinstance(left, ast.Call) \
+                and dotted_name(left.func).split(".")[-1] == "len" \
+                and isinstance(right, ast.Constant) \
+                and right.value == 0 and not isinstance(right.value, bool):
+            return "use `assert not x` instead of `assert len(x) == 0`"
+        if isinstance(right, ast.Call) \
+                and dotted_name(right.func).split(".")[-1] == "len" \
+                and isinstance(left, ast.Constant) \
+                and left.value == 0 and not isinstance(left.value, bool):
+            return "use `assert not x` instead of `assert 0 == len(x)`"
+
+    # Check both orderings for boolean/None constants (Eq and NotEq).
+    # `v is True/False/None` correctly distinguishes from numeric 0/1 since
+    # booleans are singletons: `0 is False` → False, `1 is True` → False.
+    for const_node, _ in ((left, right), (right, left)):
+        if not isinstance(const_node, ast.Constant):
+            continue
+        v = const_node.value
+        if isinstance(op, ast.Eq):
+            if v is True:
+                return "use `assert x` instead of `assert x == True`"
+            if v is False:
+                return "use `assert not x` instead of `assert x == False`"
+            if v is None:
+                return "use `assert x is None` instead of `assert x == None`"
+        elif isinstance(op, ast.NotEq):
+            if v is None:
+                return "use `assert x is not None` instead of `assert x != None`"
+
+    return None
+
+
 def has_fixture_decorator(func):
     for d in func.decorator_list:
         target = d.func if isinstance(d, ast.Call) else d
@@ -1674,7 +1768,7 @@ def parse_inline_ignores(source):
     return ignores
 
 
-def analyze_file(file, long_test_threshold=50):
+def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
     findings = []
     try:
         with open(file, "r", encoding="utf-8") as fh:
@@ -1699,7 +1793,8 @@ def analyze_file(file, long_test_threshold=50):
             if node.name.startswith("test") and collected:
                 analyze_function(node, file, findings, file_layer=layer,
                                  controls_time=time_controlled,
-                                 long_test_threshold=long_test_threshold)
+                                 long_test_threshold=long_test_threshold,
+                                 inline_setup_threshold=inline_setup_threshold)
             elif is_pytest_test_file(file) and looks_like_loose_test(node) \
                     and not has_fixture_decorator(node) \
                     and not is_web_route_handler(node) \
@@ -1735,7 +1830,8 @@ def analyze_file(file, long_test_threshold=50):
                                              skip_exempt=class_skipped,
                                              file_layer=layer,
                                              controls_time=time_controlled,
-                                             long_test_threshold=long_test_threshold)
+                                             long_test_threshold=long_test_threshold,
+                                             inline_setup_threshold=inline_setup_threshold)
 
     for i, line in enumerate(source.splitlines(), start=1):
         if re.match(r"^\s*#\s*assert\b", line):
@@ -1969,10 +2065,11 @@ def run(paths, staged=False, disable=None, config=None, config_path=None,
         stats["files"] = len(files)
 
     thresh = config.get("long_test_threshold", 50)
+    setup_thresh = config.get("inline_setup_threshold", 5)
     findings = []
     seen = set()
     for f in files:
-        for a in analyze_file(f, long_test_threshold=thresh):
+        for a in analyze_file(f, long_test_threshold=thresh, inline_setup_threshold=setup_thresh):
             conf = effective_conf(a.code, config, cli_disable)
             if conf == "off":
                 continue

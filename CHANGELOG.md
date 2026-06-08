@@ -7,6 +7,25 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- D5 (off by default, `info` severity): test body has too many inline setup
+  statements before the first assert. When a test arranges its objects and
+  transforms its data directly rather than delegating to a fixture, the act
+  and assert phases are buried under boilerplate. Enable with
+  `D5 = "info"` in `[tool.falsegreen.severity]`. The threshold defaults to 5
+  setup statements (assignments and bare function calls before the first
+  `assert`); override with `inline_setup_threshold = N` at the top level of
+  `[tool.falsegreen]`.
+- C34 (LOW): suboptimal assert form. Flags patterns where pytest itself (or
+  Python) provides a simpler, more idiomatic alternative that produces better
+  failure messages and is clearer about intent:
+  - `assert not x in y`  →  `assert x not in y`
+  - `assert len(x) == 0`  →  `assert not x`
+  - `assert x == True`  →  `assert x`
+  - `assert x == False`  →  `assert not x`
+  - `assert x == None`  →  `assert x is None`
+  - `assert x != None`  →  `assert x is not None`
+  Literal on either side is detected (e.g. `True == x` also triggers).
+  Does not fire when C5 or C7 already own the assertion.
 - C33 (LOW): sklearn metric result never asserted. Calling `model.score()`,
   `accuracy_score()`, `f1_score()`, `roc_auc_score()`, and similar metric
   functions without asserting on the return value means the test passes

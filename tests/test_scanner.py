@@ -2325,3 +2325,127 @@ def test_c33_is_low_confidence(tmp_path):
     """))
     findings = [a for a in analyze_file(str(f)) if a.code == "C33"]
     assert findings and findings[0].conf == "low"
+
+
+# ---------------------------------------------------------------------------
+# C34: suboptimal assert form
+# ---------------------------------------------------------------------------
+
+def test_c34_not_in_pattern_fires(tmp_path):
+    f = _write(tmp_path / "test_c34a.py", textwrap.dedent("""
+        def test_membership():
+            assert not "x" in ["a", "b"]
+    """))
+    assert "C34" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c34_len_eq_zero_fires(tmp_path):
+    f = _write(tmp_path / "test_c34b.py", textwrap.dedent("""
+        def test_empty():
+            result = compute()
+            assert len(result) == 0
+    """))
+    assert "C34" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c34_eq_true_fires(tmp_path):
+    f = _write(tmp_path / "test_c34c.py", textwrap.dedent("""
+        def test_flag():
+            assert is_valid() == True
+    """))
+    assert "C34" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c34_eq_false_fires(tmp_path):
+    f = _write(tmp_path / "test_c34d.py", textwrap.dedent("""
+        def test_flag():
+            assert is_valid() == False
+    """))
+    assert "C34" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c34_eq_none_fires(tmp_path):
+    f = _write(tmp_path / "test_c34e.py", textwrap.dedent("""
+        def test_no_result():
+            assert get_result() == None
+    """))
+    assert "C34" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c34_neq_none_fires(tmp_path):
+    f = _write(tmp_path / "test_c34f.py", textwrap.dedent("""
+        def test_has_result():
+            assert get_result() != None
+    """))
+    assert "C34" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c34_is_none_clean(tmp_path):
+    # `is None` is the correct identity check — must not fire C34.
+    f = _write(tmp_path / "test_c34g.py", textwrap.dedent("""
+        def test_no_result():
+            assert get_result() is None
+    """))
+    assert "C34" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c34_x_not_in_y_clean(tmp_path):
+    # `not in` is already idiomatic — must not fire C34.
+    f = _write(tmp_path / "test_c34h.py", textwrap.dedent("""
+        def test_membership():
+            assert "x" not in ["a", "b"]
+    """))
+    assert "C34" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c34_is_low_confidence(tmp_path):
+    f = _write(tmp_path / "test_c34i.py", textwrap.dedent("""
+        def test_flag():
+            assert compute() == True
+    """))
+    findings = [a for a in analyze_file(str(f)) if a.code == "C34"]
+    assert findings and findings[0].conf == "low"
+
+
+# ---------------------------------------------------------------------------
+# D5: too many inline setup statements (off by default)
+# ---------------------------------------------------------------------------
+
+def test_d5_fires_at_threshold(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD5 = "info"\n')
+    f = _write(tmp_path / "test_d5a.py", textwrap.dedent("""
+        def test_pipeline():
+            raw = load_data()
+            cleaned = clean(raw)
+            normalised = normalise(cleaned)
+            grouped = group_by(normalised)
+            result = compute(grouped)
+            assert result > 0
+    """))
+    assert "D5" in {a.code for a in run([f], config_path=cfg)}
+
+
+def test_d5_below_threshold_clean(tmp_path):
+    cfg = _write(tmp_path / ".falsegreen.toml", '[severity]\nD5 = "info"\n')
+    f = _write(tmp_path / "test_d5b.py", textwrap.dedent("""
+        def test_pipeline():
+            raw = load_data()
+            cleaned = clean(raw)
+            normalised = normalise(cleaned)
+            result = compute(normalised)
+            assert result > 0
+    """))
+    assert "D5" not in {a.code for a in run([f], config_path=cfg)}
+
+
+def test_d5_off_by_default(tmp_path):
+    f = _write(tmp_path / "test_d5c.py", textwrap.dedent("""
+        def test_pipeline():
+            raw = load_data()
+            cleaned = clean(raw)
+            normalised = normalise(cleaned)
+            grouped = group_by(normalised)
+            result = compute(grouped)
+            assert result > 0
+    """))
+    assert "D5" not in {a.code for a in run([f])}
