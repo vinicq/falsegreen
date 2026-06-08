@@ -1229,7 +1229,7 @@ def has_property_test_decorator(func):
     return False
 
 
-SKIP_MARKERS = {"skip", "skipif", "skipIf", "skipUnless", "skipTest", "xfail"}
+SKIP_MARKERS = {"skip", "skipif", "skipIf", "skipUnless", "skipTest", "xfail", "SKIP"}
 
 
 def has_skip_decorator(func):
