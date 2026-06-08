@@ -89,6 +89,7 @@ CASES = {
     "C20": ("assertion in dead code after return/raise/fail (never runs)", "high", "J1"),
     "C21": ("every assertion is conditional, none runs unconditionally", "low", "J1"),
     "C22": ("async test asserts but never awaits the unit (vacuous pass)", "off", "J1"),
+    "C23": ("opens a real file at a literal path (mystery guest)", "low", "J6"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
 }
 
@@ -1239,6 +1240,28 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             # is the norm there, not a smell. Suppress C14 in web/browser ctx.
             if checks_exists and writes and not ({"web", "browser"} & ctx):
                 findings.append(Finding(file, n.lineno, "C14"))
+
+    # C23: the test reads a file using a hard-coded string path. The outcome
+    # depends on the filesystem state at runtime: the file may not exist in CI
+    # (false negative) or may hold stale content from a prior run (false
+    # positive). Covers bare open("path") and Path("path").read_text/read_bytes().
+    for n in children_no_nesting(func):
+        if not isinstance(n, ast.Call):
+            continue
+        target = dotted_name(n.func)
+        if target in ("open", "io.open", "codecs.open") and n.args \
+                and isinstance(n.args[0], ast.Constant) \
+                and isinstance(n.args[0].value, str):
+            findings.append(Finding(file, n.lineno, "C23"))
+        elif isinstance(n.func, ast.Attribute) \
+                and n.func.attr in ("read_text", "read_bytes") \
+                and isinstance(n.func.value, ast.Call):
+            val_call = n.func.value
+            fname = dotted_name(val_call.func)
+            if fname in ("Path", "pathlib.Path") and val_call.args \
+                    and isinstance(val_call.args[0], ast.Constant) \
+                    and isinstance(val_call.args[0].value, str):
+                findings.append(Finding(file, n.lineno, "C23"))
 
 
 # ---------------------------------------------------------------------------

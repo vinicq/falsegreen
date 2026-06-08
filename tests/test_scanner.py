@@ -1431,3 +1431,82 @@ def test_c22_clean_when_trio_drives_the_loop(tmp_path):
             assert results == [1, 2]
     """))
     assert "C22" not in {a.code for a in run([f], config_path=cfg)}
+
+
+# --- C23: opens a real file at a literal path (mystery guest) ----------------
+
+def test_c23_flags_open_with_literal_path(tmp_path):
+    assert "C23" in scan_source(tmp_path, """
+        def test_loads_config():
+            with open("tests/fixtures/config.json") as f:
+                data = json.load(f)
+            assert data["key"] == "value"
+    """)
+
+
+def test_c23_flags_open_without_with(tmp_path):
+    assert "C23" in scan_source(tmp_path, """
+        def test_reads_file():
+            f = open("expected.txt")
+            content = f.read()
+            assert content == "ok"
+    """)
+
+
+def test_c23_flags_pathlib_read_text_with_literal(tmp_path):
+    assert "C23" in scan_source(tmp_path, """
+        from pathlib import Path
+        def test_config():
+            content = Path("config/settings.toml").read_text()
+            assert "timeout" in content
+    """)
+
+
+def test_c23_flags_pathlib_read_bytes_with_literal(tmp_path):
+    assert "C23" in scan_source(tmp_path, """
+        from pathlib import Path
+        def test_binary():
+            data = Path("tests/data/image.png").read_bytes()
+            assert data[:4] == b"\\x89PNG"
+    """)
+
+
+def test_c23_clean_when_open_receives_variable(tmp_path):
+    codes = scan_source(tmp_path, """
+        def test_file(data_file):
+            with open(data_file) as f:
+                content = f.read()
+            assert content
+    """)
+    assert "C23" not in codes
+
+
+def test_c23_clean_when_open_receives_tmp_path(tmp_path):
+    codes = scan_source(tmp_path, """
+        def test_writes(tmp_path):
+            p = tmp_path / "out.txt"
+            p.write_text("hello")
+            with open(p) as f:
+                assert f.read() == "hello"
+    """)
+    assert "C23" not in codes
+
+
+def test_c23_clean_when_pathlib_receives_fixture(tmp_path):
+    codes = scan_source(tmp_path, """
+        from pathlib import Path
+        def test_roundtrip(tmp_path):
+            content = (tmp_path / "data.txt").read_text()
+            assert content == "expected"
+    """)
+    assert "C23" not in codes
+
+
+def test_c23_clean_when_open_receives_attribute(tmp_path):
+    codes = scan_source(tmp_path, """
+        def test_file(self):
+            with open(self.fixture_path) as f:
+                data = f.read()
+            assert data
+    """)
+    assert "C23" not in codes
