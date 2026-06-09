@@ -6,6 +6,39 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-09
+
+### Added
+- **#31** — `unittest.TestCase` subclasses are now fully collected and
+  analyzed, even when the class name does not start with `Test`. A new
+  `is_testcase_subclass()` helper detects inheritance from `TestCase`,
+  `unittest.TestCase`, `django.test.TestCase`, and common variants.
+  `self.assert*` methods (`assertEqual`, `assertRaises`, `assertFalse`,
+  etc.) count as assertions in all existing checks (C2, C2b, C21, …),
+  so xUnit-style tests no longer produce spurious "no assertion" findings.
+- **C6b** (LOW, issue #6): assertion subscripts a mock call-args list by a
+  computed or index-derived position rather than a stable name.
+  `mock.call_args.args[idx]` where `idx` was obtained via `.index()` or an
+  expression makes the assertion silently break whenever the argument order of
+  the called function changes. Access by `kwargs["name"]` is not flagged.
+- **C11a** (LOW, issue #5): self-confirming literal. Fires when
+  `assert obj.attr == VALUE` confirms a literal that the test itself assigned
+  as a constructor keyword argument in the same function
+  (`obj = MyClass(attr=VALUE); assert obj.attr == VALUE`). The assertion
+  verifies what the test wrote, not what the SUT produced.
+- **C24** (LOW, issue #21): module-level mutable state mutated by a test.
+  A module-global `list`, `dict`, `set`, `Counter`, or `defaultdict` that is
+  written inside a test function (via `.append()`, `.update()`, subscript
+  assignment, augmented assignment, etc.) can leak side effects into later
+  tests. Globals reset by an `autouse=True` fixture are excluded because the
+  fixture provides the required teardown.
+- **C16** extended (issue #7): now detects hardcoded timeouts in concurrency
+  primitives. `future.result(timeout=N)`, `thread.join(timeout=N)`,
+  `queue.get(timeout=N)`, `asyncio.wait_for(coro, timeout=N)`, and similar
+  calls with a literal numeric `timeout=` argument are flagged because the
+  value may be too short in a loaded CI environment, turning a real race into
+  a non-deterministic failure.
+
 ## [0.3.0] - 2026-06-08
 
 ### Added
