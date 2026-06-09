@@ -76,9 +76,11 @@ CASES = {
     "C4b": ("test class has __init__ (not collected unless subclassed)", "low", "J1"),
     "C5":  ("always-true check (assert True / tuple / or True)", "high", "J2"),
     "C6":  ("weak check (only verifies that something came back)", "low", "J4"),
+    "C6b": ("assertion coupled to positional argument layout", "low", "J5"),
     "C7":  ("compares a thing to itself (always matches)", "high", "J2"),
     "C8":  ("exact equality on a float (fails on rounding, not bugs)", "low", "J4"),
     "C9":  ("pytest.raises too broad (accepts any error)", "low", "J4"),
+    "C11a":("self-confirming literal assigned by the test itself", "low", "J2"),
     "C13": ("mock assertion misspelled / not called (always passes)", "high", "J3"),
     "C13b":("patch without autospec (lets mock typos pass)", "low", "J3"),
     "C14": ("golden/snapshot generated from the output itself", "low", "J2"),
@@ -90,6 +92,7 @@ CASES = {
     "C21": ("every assertion is conditional, none runs unconditionally", "low", "J1"),
     "C22": ("async test asserts but never awaits the unit (vacuous pass)", "off", "J1"),
     "C23": ("opens a real file at a literal path (mystery guest)", "low", "J6"),
+    "C24": ("module-global mutable state shared across tests", "low", "J6"),
     "C25": ("xfail without strict=True silently accepts a fixed bug (XPASS treated as pass)", "low", "J4"),
     "C27": ("try/except/pass — test passes whether the expected exception is raised or not", "high", "J1"),
     "C28": ("pytest.raises binding declared but exception content never inspected", "low", "J4"),
@@ -127,6 +130,18 @@ MOCK_ASSERTS_VALID = {
     "assert_called", "assert_called_once", "assert_called_with",
     "assert_called_once_with", "assert_any_call", "assert_has_calls",
     "assert_not_called",
+}
+XUNIT_ASSERT_TRUE = {"assertTrue"}
+XUNIT_ASSERT_EQUAL = {"assertEqual"}
+XUNIT_ASSERT_RAISES = {"assertRaises", "assertRaisesRegex", "assertRaisesRegexp"}
+XUNIT_ASSERTS_VALID = {
+    "assertTrue", "assertFalse", "assertEqual", "assertNotEqual",
+    "assertIs", "assertIsNot", "assertIsNone", "assertIsNotNone",
+    "assertIn", "assertNotIn", "assertIsInstance", "assertNotIsInstance",
+    "assertAlmostEqual", "assertNotAlmostEqual", "assertGreater",
+    "assertGreaterEqual", "assertLess", "assertLessEqual",
+    "assertRegex", "assertNotRegex", "assertRaises", "assertRaisesRegex",
+    "assertRaisesRegexp",
 }
 # Names that look like a mock assertion but do not exist (always pass).
 MOCK_FALSE_NAMES = {
@@ -191,6 +206,19 @@ TORCH_RANDOM_CALLS = {
 TF_RANDOM_CALLS = {
     "normal", "uniform", "shuffle", "categorical",
     "truncated_normal", "stateless_normal", "stateless_uniform",
+}
+
+MUTABLE_GLOBAL_FACTORIES = {
+    "list", "dict", "set", "Counter", "collections.Counter",
+    "defaultdict", "collections.defaultdict",
+}
+MUTATING_METHODS = {
+    "append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse",
+    "update", "add", "discard", "setdefault",
+}
+TIMEOUT_KEYWORDS = {"timeout", "segment_timeout"}
+CONCURRENCY_TIMEOUT_CALLS = {
+    "get", "join", "wait", "wait_for", "sleep", "result",
 }
 
 # Decorator leaf names that indicate a retry/repeat loop. These make a test
@@ -523,6 +551,18 @@ def is_call_to(node, *names):
     return any(target == n or target.endswith("." + n) for n in names)
 
 
+def is_xunit_assert_call(node):
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return False
+    if node.func.attr not in XUNIT_ASSERTS_VALID:
+        return False
+    return isinstance(node.func.value, ast.Name) and node.func.value.id in ("self", "cls")
+
+
+def is_xunit_raises_call(node):
+    return is_xunit_assert_call(node) and node.func.attr in XUNIT_ASSERT_RAISES
+
+
 def constant_truthy(node):
     if isinstance(node, ast.Constant):
         return bool(node.value)
@@ -769,6 +809,240 @@ def assert_sensitive_equality(test):
     return False
 
 
+def _compare_node(left, op, right):
+    return ast.Compare(left=left, ops=[op], comparators=[right])
+
+
+def _literal_value(node):
+    if isinstance(node, ast.Constant) and isinstance(
+        node.value, (str, bytes, int, float, complex, bool, type(None))
+    ):
+        return node.value
+    return None
+
+
+def _same_literal(left, right):
+    return _literal_value(left) == _literal_value(right) \
+        and _literal_value(left) is not None
+
+
+def _slice_value(node):
+    # Python 3.8 wraps subscript slices in ast.Index; unwrap only that node.
+    if type(node).__name__ == "Index":
+        return node.value
+    return node
+
+
+def _subscript_base_name(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _subscript_base_name(node.value)
+        return (base + "." + node.attr) if base else node.attr
+    if isinstance(node, ast.Subscript):
+        return _subscript_base_name(node.value)
+    return ""
+
+
+def _contains_name(node, names):
+    return any(isinstance(n, ast.Name) and n.id in names for n in ast.walk(node))
+
+
+def _index_names_from_index_calls(func):
+    names = set()
+    for n in children_no_nesting(func):
+        if not isinstance(n, ast.Assign):
+            continue
+        if not isinstance(n.value, ast.Call):
+            continue
+        if dotted_name(n.value.func).split(".")[-1] != "index":
+            continue
+        for target in n.targets:
+            if isinstance(target, ast.Name):
+                names.add(target.id)
+    return names
+
+
+def assert_arg_order_coupled(test, index_names):
+    """LOW C6b: assertion depends on computed/index-derived position in args."""
+    for n in ast.walk(test):
+        if not isinstance(n, ast.Subscript):
+            continue
+        base = _subscript_base_name(n.value)
+        if not ("args" in base.split(".") or "call_args" in base.split(".")):
+            continue
+        sl = _slice_value(n.slice)
+        computed = isinstance(sl, (ast.BinOp, ast.UnaryOp, ast.Call)) \
+            or (isinstance(sl, ast.Name) and sl.id in index_names) \
+            or _contains_name(sl, index_names)
+        if computed:
+            return True
+    return False
+
+
+def c16_call_detail(call, has_seed, controls_time):
+    target = dotted_name(call.func)
+    last = target.split(".")[-1]
+    if target.endswith("time.sleep") or target.endswith("sleep"):
+        return "fixed sleep"
+    if not controls_time and (
+        target.endswith("datetime.now") or target.endswith("datetime.today")
+        or target.endswith("date.today") or target.endswith("time.time")
+    ):
+        return "reads the system clock"
+    if (target.startswith("random.") or target.endswith("randint")
+            or target.endswith("choice") or target.endswith("shuffle")) and not has_seed:
+        return "randomness without a fixed seed"
+    if target.endswith("train_test_split") \
+            and not any(kw.arg == "random_state" for kw in call.keywords):
+        return "train_test_split without random_state - non-deterministic split"
+    if target.startswith("torch.") and last in TORCH_RANDOM_CALLS and not has_seed:
+        return "PyTorch randomness without torch.manual_seed"
+    if target.startswith("tf.random.") and last in TF_RANDOM_CALLS and not has_seed:
+        return "TensorFlow randomness without tf.random.set_seed"
+    if last in CONCURRENCY_TIMEOUT_CALLS:
+        for kw in call.keywords:
+            if kw.arg in TIMEOUT_KEYWORDS and isinstance(kw.value, ast.Constant) \
+                    and isinstance(kw.value.value, (int, float)):
+                return "fixed timeout in concurrent wait"
+    for kw in call.keywords:
+        if kw.arg == "segment_timeout" and isinstance(kw.value, ast.Constant) \
+                and isinstance(kw.value.value, (int, float)):
+            return "fixed production timeout"
+    return None
+
+
+def helper_c16_detail(func, controls_time):
+    has_seed = any(
+        is_call_to(c, "random.seed", "seed", "np.random.seed",
+                   "torch.manual_seed", "manual_seed",
+                   "tf.random.set_seed", "set_seed")
+        for c in ast.walk(func) if isinstance(c, ast.Call)
+    )
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Call):
+            detail = c16_call_detail(n, has_seed, controls_time)
+            if detail:
+                return detail
+    return None
+
+
+def c11a_findings(func):
+    """Return (line, detail) for self-confirming literals in top-level asserts."""
+    local_names = set()
+    assigned_literals = {}
+    findings = []
+
+    def _record_attr(target, value):
+        if not isinstance(target, ast.Attribute):
+            return
+        root = root_name(target)
+        if root in local_names:
+            literal = _literal_value(value)
+            if literal is not None:
+                assigned_literals[ast.dump(target)] = literal
+
+    for stmt in func.body:
+        if isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
+                if isinstance(target, ast.Name):
+                    local_names.add(target.id)
+                    if isinstance(stmt.value, ast.Call):
+                        for kw in stmt.value.keywords:
+                            if kw.arg and _literal_value(kw.value) is not None:
+                                attr = ast.Attribute(
+                                    value=ast.Name(id=target.id, ctx=ast.Load()),
+                                    attr=kw.arg,
+                                    ctx=ast.Load(),
+                                )
+                                assigned_literals[ast.dump(attr)] = _literal_value(kw.value)
+                _record_attr(target, stmt.value)
+        elif isinstance(stmt, ast.AnnAssign):
+            if isinstance(stmt.target, ast.Name):
+                local_names.add(stmt.target.id)
+            if stmt.value is not None:
+                _record_attr(stmt.target, stmt.value)
+        elif isinstance(stmt, ast.Assert):
+            test = stmt.test
+            if not (isinstance(test, ast.Compare) and len(test.ops) == 1
+                    and isinstance(test.ops[0], ast.Eq)):
+                continue
+            pairs = ((test.left, test.comparators[0]), (test.comparators[0], test.left))
+            for attr_node, literal_node in pairs:
+                key = ast.dump(attr_node)
+                if key in assigned_literals and assigned_literals[key] == _literal_value(literal_node):
+                    findings.append((stmt.lineno, "literal assigned earlier in this test"))
+                    break
+    return findings
+
+
+def _module_mutable_bindings(tree):
+    names = set()
+    for stmt in tree.body:
+        if not isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = stmt.value
+        targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+        mutable = isinstance(value, (ast.List, ast.Dict, ast.Set))
+        if isinstance(value, ast.Call):
+            mutable = dotted_name(value.func) in MUTABLE_GLOBAL_FACTORIES \
+                or dotted_name(value.func).split(".")[-1] in MUTABLE_GLOBAL_FACTORIES
+        if not mutable:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                names.add(target.id)
+    return names
+
+
+def _mutated_module_globals(func, globals_):
+    mutated = set()
+    for n in children_no_nesting(func):
+        if isinstance(n, (ast.Assign, ast.AugAssign, ast.Delete)):
+            targets = n.targets if isinstance(n, (ast.Assign, ast.Delete)) else [n.target]
+            for target in targets:
+                if isinstance(target, ast.Subscript) and root_name(target.value) in globals_:
+                    mutated.add(root_name(target.value))
+                elif isinstance(target, ast.Attribute) and root_name(target) in globals_:
+                    mutated.add(root_name(target))
+        elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+            if n.func.attr in MUTATING_METHODS and root_name(n.func.value) in globals_:
+                mutated.add(root_name(n.func.value))
+    return mutated
+
+
+def _read_module_globals_in_asserts(func, globals_):
+    reads = {}
+    for n in children_no_nesting(func):
+        if not isinstance(n, ast.Assert):
+            continue
+        for sub in ast.walk(n.test):
+            name = root_name(sub)
+            if name in globals_ and isinstance(sub, (ast.Name, ast.Attribute, ast.Subscript)):
+                reads.setdefault(name, n.lineno)
+    return reads
+
+
+def _autouse_fixture_resets(tree, globals_):
+    resets = set()
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        autouse = False
+        for d in node.decorator_list:
+            if not isinstance(d, ast.Call):
+                continue
+            if "fixture" not in dotted_name(d.func):
+                continue
+            for kw in d.keywords:
+                if kw.arg == "autouse" and isinstance(kw.value, ast.Constant) \
+                        and kw.value.value is True:
+                    autouse = True
+        if autouse:
+            resets |= _mutated_module_globals(node, globals_)
+    return resets
+
+
 # ---------------------------------------------------------------------------
 # Findings
 # ---------------------------------------------------------------------------
@@ -813,12 +1087,15 @@ def has_assertion(func):
             last = target.split(".")[-1]
             if last in MOCK_ASSERTS_VALID or last.startswith("assert"):
                 return True
+            if is_xunit_assert_call(n):
+                return True
             # expects / ward: expect(x).to(equal(y))
             if last in FLUENT_ASSERT_CALLS:
                 return True
         if isinstance(n, ast.With):
             for item in n.items:
-                if is_call_to(item.context_expr, "pytest.raises", "raises"):
+                if is_call_to(item.context_expr, "pytest.raises", "raises") \
+                        or is_xunit_raises_call(item.context_expr):
                     return True
     return False
 
@@ -892,6 +1169,8 @@ def block_has_assertion(stmts):
                 last = t.split(".")[-1]
                 if t.endswith("raises") or last.startswith("assert") \
                         or last in FLUENT_ASSERT_CALLS:
+                    return True
+                if is_xunit_assert_call(sub):
                     return True
     return False
 
@@ -976,9 +1255,12 @@ def _stmt_is_check(stmt):
                     or t.endswith("raises") or last == "fail" \
                     or last in FLUENT_ASSERT_CALLS:
                 return True
+            if is_xunit_assert_call(stmt.value):
+                return True
     if isinstance(stmt, ast.With):
         for item in stmt.items:
-            if is_call_to(item.context_expr, "pytest.raises", "raises"):
+            if is_call_to(item.context_expr, "pytest.raises", "raises") \
+                    or is_xunit_raises_call(item.context_expr):
                 return True
     return False
 
@@ -1074,9 +1356,12 @@ def func_has_any_check(func):
             if last in MOCK_ASSERTS_VALID or last.startswith("assert") \
                     or t.endswith("raises") or last in FLUENT_ASSERT_CALLS:
                 return True
+            if is_xunit_assert_call(n):
+                return True
         if isinstance(n, ast.With):
             for item in n.items:
-                if is_call_to(item.context_expr, "pytest.raises", "raises"):
+                if is_call_to(item.context_expr, "pytest.raises", "raises") \
+                        or is_xunit_raises_call(item.context_expr):
                     return True
     return False
 
@@ -1241,6 +1526,22 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                 if hint:
                     findings.append(Finding(file, n.lineno, "C34", hint))
 
+    # C6b: assertion subscripts a mock call-args list by a computed/index-derived
+    # position rather than by a stable name — the check breaks if the argument
+    # order of the called function changes.
+    _index_names = _index_names_from_index_calls(func)
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Assert) and assert_arg_order_coupled(n.test, _index_names):
+            findings.append(Finding(file, n.lineno, "C6b",
+                                    "assertion uses positional index into call_args — "
+                                    "breaks on argument-order changes"))
+
+    # C11a: assertEqual(obj.attr, VALUE) where VALUE was set by the test itself
+    # in the same function — the assertion confirms what the test just wrote, not
+    # what the SUT produced.
+    for line_no, detail in c11a_findings(func):
+        findings.append(Finding(file, line_no, "C11a", detail))
+
     # C21: every assertion in the test is conditional and none runs
     # unconditionally, so a false condition at runtime makes the whole test pass
     # vacuously. A function-scoped, higher-signal cousin of C1. When it fires it
@@ -1330,7 +1631,10 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             elif broad and "match" not in kwargs:
                 findings.append(Finding(file, n.lineno, "C9", "raises(Exception) without match"))
 
-    has_seed = any(
+    # C16: result depends on time, randomness, a fixed sleep, or a hardcoded
+    # timeout — uses helper to keep detection in one place (also covers
+    # concurrency timeouts added in #7).
+    _c16_has_seed = any(
         is_call_to(c, "random.seed", "seed", "np.random.seed",
                    "torch.manual_seed", "manual_seed",
                    "tf.random.set_seed", "set_seed")
@@ -1338,30 +1642,9 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
     )
     for n in children_no_nesting(func):
         if isinstance(n, ast.Call):
-            target = dotted_name(n.func)
-            last = target.split(".")[-1]
-            if target.endswith("time.sleep") or target.endswith("sleep"):
-                findings.append(Finding(file, n.lineno, "C16", "fixed sleep"))
-            elif not controls_time and (
-                target.endswith("datetime.now") or target.endswith("datetime.today")
-                or target.endswith("date.today") or target.endswith("time.time")
-            ):
-                findings.append(Finding(file, n.lineno, "C16", "reads the system clock"))
-            elif (target.startswith("random.") or target.endswith("randint")
-                  or target.endswith("choice") or target.endswith("shuffle")) and not has_seed:
-                findings.append(Finding(file, n.lineno, "C16", "randomness without a fixed seed"))
-            elif target.endswith("train_test_split") \
-                    and not any(kw.arg == "random_state" for kw in n.keywords):
-                findings.append(Finding(file, n.lineno, "C16",
-                                        "train_test_split without random_state — non-deterministic split"))
-            elif target.startswith("torch.") and last in TORCH_RANDOM_CALLS \
-                    and not has_seed:
-                findings.append(Finding(file, n.lineno, "C16",
-                                        "PyTorch randomness without torch.manual_seed"))
-            elif target.startswith("tf.random.") and last in TF_RANDOM_CALLS \
-                    and not has_seed:
-                findings.append(Finding(file, n.lineno, "C16",
-                                        "TensorFlow randomness without tf.random.set_seed"))
+            detail = c16_call_detail(n, _c16_has_seed, controls_time)
+            if detail:
+                findings.append(Finding(file, n.lineno, "C16", detail))
 
     for n in children_no_nesting(func):
         if isinstance(n, ast.If) and isinstance(n.test, ast.UnaryOp) \
@@ -1856,6 +2139,17 @@ def parse_inline_ignores(source):
     return ignores
 
 
+def is_testcase_subclass(node):
+    """Return True if a ClassDef inherits from unittest.TestCase or known Django/etc. variants."""
+    for base in node.bases:
+        name = dotted_name(base)
+        if name in ("TestCase", "unittest.TestCase", "SimpleTestCase",
+                    "django.test.TestCase", "django.test.SimpleTestCase",
+                    "django.test.TransactionTestCase"):
+            return True
+    return False
+
+
 def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
     findings = []
     try:
@@ -1890,7 +2184,7 @@ def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
                 findings.append(Finding(file, node.lineno, "C4",
                                         "'%s' does not start with test_, pytest skips it" % node.name))
         elif isinstance(node, ast.ClassDef):
-            if node.name.startswith("Test") and collected:
+            if (node.name.startswith("Test") or is_testcase_subclass(node)) and collected:
                 has_init = any(
                     isinstance(m, ast.FunctionDef) and m.name == "__init__"
                     for m in node.body
@@ -1920,6 +2214,36 @@ def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
                                              controls_time=time_controlled,
                                              long_test_threshold=long_test_threshold,
                                              inline_setup_threshold=inline_setup_threshold)
+
+    # C24: module-level mutable global mutated inside a test function — the
+    # mutation outlives the test and can pollute later tests in the same session.
+    # Only fires when at least one test function writes to the global directly
+    # (append/update/setitem/augassign); globals reset by an autouse fixture are
+    # excluded because the fixture provides the required teardown.
+    _globals = _module_mutable_bindings(tree)
+    if _globals:
+        _autouse_reset = _autouse_fixture_resets(tree, _globals)
+        _effective = _globals - _autouse_reset
+        if _effective:
+            _test_funcs = [
+                n for n in ast.walk(tree)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and n.name.startswith("test")
+            ]
+            _mutated_by_tests = set()
+            for _tf in _test_funcs:
+                _mutated_by_tests |= _mutated_module_globals(_tf, _effective)
+            for _stmt in tree.body:
+                if not isinstance(_stmt, (ast.Assign, ast.AnnAssign)):
+                    continue
+                _targets = _stmt.targets if isinstance(_stmt, ast.Assign) else [_stmt.target]
+                for _tgt in _targets:
+                    if isinstance(_tgt, ast.Name) and _tgt.id in _mutated_by_tests:
+                        findings.append(Finding(
+                            file, _stmt.lineno, "C24",
+                            "'%s' is module-level mutable state mutated by a test — "
+                            "can leak between test runs" % _tgt.id,
+                        ))
 
     for i, line in enumerate(source.splitlines(), start=1):
         if re.match(r"^\s*#\s*assert\b", line):

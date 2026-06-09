@@ -2683,3 +2683,163 @@ def test_c37_is_low_confidence(tmp_path):
     """))
     findings = [a for a in analyze_file(str(f)) if a.code == "C37"]
     assert findings and findings[0].conf == "low"
+
+
+# ---------------------------------------------------------------------------
+# Issue #31 — xUnit / unittest.TestCase subclass support
+# ---------------------------------------------------------------------------
+
+def test_xunit_testcase_subclass_c2_fires(tmp_path):
+    # A unittest.TestCase subclass not starting with "Test" is still collected.
+    assert "C2" in scan_source(tmp_path, """
+        import unittest
+        class SuiteA(unittest.TestCase):
+            def test_empty(self):
+                pass
+    """)
+
+
+def test_xunit_self_assertEqual_counts_as_assertion(tmp_path):
+    # self.assertEqual does not trigger C2b (has_assertion returns True).
+    assert "C2" not in scan_source(tmp_path, """
+        import unittest
+        class MyTests(unittest.TestCase):
+            def test_ok(self):
+                self.assertEqual(1 + 1, 2)
+    """)
+    assert "C2b" not in scan_source(tmp_path, """
+        import unittest
+        class MyTests(unittest.TestCase):
+            def test_ok(self):
+                self.assertEqual(1 + 1, 2)
+    """)
+
+
+def test_xunit_assertraises_context_manager_counts(tmp_path):
+    # with self.assertRaises(...) counts as an assertion.
+    assert "C2" not in scan_source(tmp_path, """
+        import unittest
+        class MyTests(unittest.TestCase):
+            def test_raises(self):
+                with self.assertRaises(ValueError):
+                    int("bad")
+    """)
+
+
+# ---------------------------------------------------------------------------
+# Issue #6 — C6b: positional argument layout coupling
+# ---------------------------------------------------------------------------
+
+def test_c6b_fires_for_index_subscript_on_call_args(tmp_path):
+    assert "C6b" in scan_source(tmp_path, """
+        def test_positional(mock_fn):
+            idx = mock_fn.call_args_list[0].args.index(42)
+            assert mock_fn.call_args.args[idx] == 42
+    """)
+
+
+def test_c6b_clean_for_named_arg_check(tmp_path):
+    # Checking call_args.kwargs by name has no positional coupling.
+    assert "C6b" not in scan_source(tmp_path, """
+        def test_named(mock_fn):
+            assert mock_fn.call_args.kwargs["key"] == "value"
+    """)
+
+
+# ---------------------------------------------------------------------------
+# Issue #5 — C11a: self-confirming literal
+# ---------------------------------------------------------------------------
+
+def test_c11a_fires_when_assert_mirrors_constructor_kwarg(tmp_path):
+    assert "C11a" in scan_source(tmp_path, """
+        def test_self_confirming():
+            obj = MyClass(name="alice")
+            assert obj.name == "alice"
+    """)
+
+
+def test_c11a_clean_when_value_comes_from_sut(tmp_path):
+    # Value not set by the test itself — no C11a.
+    assert "C11a" not in scan_source(tmp_path, """
+        def test_from_sut():
+            obj = service.get_user(1)
+            assert obj.name == "alice"
+    """)
+
+
+# ---------------------------------------------------------------------------
+# Issue #7 — C16: concurrency timeout detection
+# ---------------------------------------------------------------------------
+
+def test_c16_fires_for_future_result_with_timeout(tmp_path):
+    assert "C16" in scan_source(tmp_path, """
+        def test_timeout():
+            val = future.result(timeout=5)
+            assert val == "ok"
+    """)
+
+
+def test_c16_clean_for_future_result_no_timeout(tmp_path):
+    assert "C16" not in scan_source(tmp_path, """
+        def test_no_timeout():
+            val = future.result()
+            assert val == "ok"
+    """)
+
+
+def test_c16_fires_for_thread_join_with_timeout(tmp_path):
+    assert "C16" in scan_source(tmp_path, """
+        import threading
+        def test_join_timeout():
+            t = threading.Thread(target=lambda: None)
+            t.start()
+            t.join(timeout=10)
+            assert not t.is_alive()
+    """)
+
+
+# ---------------------------------------------------------------------------
+# Issue #21 — C24: module-level mutable state mutated by a test
+# ---------------------------------------------------------------------------
+
+def test_c24_fires_for_list_mutated_in_test(tmp_path):
+    assert "C24" in scan_source(tmp_path, """
+        STORE = []
+        def test_add():
+            STORE.append(1)
+            assert len(STORE) == 1
+    """)
+
+
+def test_c24_fires_for_dict_update_in_test(tmp_path):
+    assert "C24" in scan_source(tmp_path, """
+        CACHE = {}
+        def test_put():
+            CACHE["x"] = 1
+            assert CACHE["x"] == 1
+    """)
+
+
+def test_c24_clean_when_autouse_fixture_resets(tmp_path):
+    # If an autouse fixture clears the global, it is not a leak.
+    assert "C24" not in scan_source(tmp_path, """
+        import pytest
+        STORE = []
+
+        @pytest.fixture(autouse=True)
+        def reset():
+            STORE.clear()
+
+        def test_add():
+            STORE.append(1)
+            assert len(STORE) == 1
+    """)
+
+
+def test_c24_clean_for_immutable_global(tmp_path):
+    # A module-level constant (int/str) cannot be mutated.
+    assert "C24" not in scan_source(tmp_path, """
+        LIMIT = 10
+        def test_limit():
+            assert LIMIT == 10
+    """)
