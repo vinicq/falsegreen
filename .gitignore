@@ -10,3 +10,6 @@ dist/
 venv/
 .env
 .handoff/
+
+# pointer to private audit hub - never commit
+CLAUDE.local.md
