@@ -3023,3 +3023,96 @@ def test_no_c17_for_non_pytest_skip_in_except(tmp_path):
             except Exception:
                 reader.skip()
     """)
+
+
+# --- status report: pyramid level, fix-hint, output dir ----------------------
+
+def _findings_of(tmp_path, code):
+    return analyze_file(_write(tmp_path / "test_lvl.py", code))
+
+
+def test_detect_pyramid_level_unit_by_default(tmp_path):
+    fs = _findings_of(tmp_path, """
+        def test_x():
+            assert True
+    """)
+    assert fs and all(a.level == "unit" for a in fs)
+
+
+def test_detect_pyramid_level_integration_on_web_import(tmp_path):
+    fs = _findings_of(tmp_path, """
+        import requests
+        def test_x():
+            assert True
+    """)
+    assert fs and all(a.level == "integration" for a in fs)
+
+
+def test_detect_pyramid_level_integration_on_db_import(tmp_path):
+    fs = _findings_of(tmp_path, """
+        import sqlalchemy
+        def test_x():
+            assert True
+    """)
+    assert fs and all(a.level == "integration" for a in fs)
+
+
+def test_detect_pyramid_level_e2e_on_browser_import(tmp_path):
+    fs = _findings_of(tmp_path, """
+        from playwright.sync_api import sync_playwright
+        def test_x():
+            assert True
+    """)
+    assert fs and all(a.level == "e2e" for a in fs)
+
+
+def test_json_finding_carries_level_and_fix(tmp_path):
+    findings = run([_write(tmp_path / "test_j.py", "def test_x():\n    assert True\n")])
+    d = json.loads(render_json(findings))[0]
+    assert d["level"] == "unit"
+    assert d["fix"]  # C5 has a remediation hint
+    assert "constant" in d["fix"]
+
+
+def test_render_text_shows_level_and_fix(tmp_path):
+    from falsegreen.scanner import render_text
+    findings = run([_write(tmp_path / "test_r.py", "def test_x():\n    assert True\n")])
+    out = render_text(findings)
+    assert "level: unit" in out
+    assert "fix:" in out
+
+
+def test_render_text_summary_by_level_and_top_fixes(tmp_path):
+    from falsegreen.scanner import render_text
+    findings = run([_write(tmp_path / "test_r2.py", "def test_x():\n    assert True\n")])
+    out = render_text(findings)
+    assert "By level:" in out
+    assert "unit:1" in out
+    assert "Top fixes:" in out
+    assert "C5 (1)" in out
+
+
+def test_output_directory_writes_report_file(tmp_path):
+    f = _write(tmp_path / "test_h.py", "def test_x():\n    assert True\n")
+    outdir = tmp_path / ".falsegreen"
+    main([f, "--json", "--output", str(outdir)])
+    report = outdir / "report.json"
+    assert report.exists()
+    doc = json.loads(report.read_text(encoding="utf-8"))
+    assert doc[0]["code"] == "C5"
+
+
+def test_output_file_path_still_writes_file(tmp_path):
+    # a path with an extension is still treated as a file, not a directory
+    f = _write(tmp_path / "test_h2.py", "def test_x():\n    assert True\n")
+    out = tmp_path / "sub" / "report.sarif"
+    main([f, "--format", "sarif", "--output", str(out)])
+    assert out.is_file()
+    assert json.loads(out.read_text(encoding="utf-8"))["version"] == "2.1.0"
+
+
+def test_fix_hints_cover_every_case(tmp_path):
+    # every catalog code must have a remediation; the report promises one
+    from falsegreen.scanner import CASES, FIX_HINTS
+    missing = [c for c in CASES if c not in FIX_HINTS]
+    assert missing == [], "codes without a fix-hint: %s" % missing
