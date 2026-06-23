@@ -70,6 +70,6 @@ preferred to one that flags correct code. A false alarm trains people to ignore 
 
 Same idea, different language surface: [falsegreen-js](https://github.com/vinicq/falsegreen-js)
 (JS/TS, TypeScript compiler API) and
-[falsegreen-robot](https://github.com/vinicq/falsegreen-robot) (Robot Framework,
+[robotframework-falsegreen](https://github.com/vinicq/robotframework-falsegreen) (Robot Framework,
 `robot.api`). Codes share an id across the family where the smell is the same concept
 (C2, C2b, C5, C7, C16).
