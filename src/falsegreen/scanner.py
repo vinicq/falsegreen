@@ -448,11 +448,24 @@ INTEGRATION_DB_ROOTS = {
 }
 
 
+# Real HTTP clients and web frameworks: a test importing one talks to an actual
+# (or test-client) API boundary, which is an integration test. This is a strict
+# subset of WEB_IMPORT_ROOTS - the HTTP mock/record/replay libraries there
+# (responses, httpretty, respx, aioresponses, vcr, requests_mock, pook,
+# pytest_httpserver) are deliberately excluded: stubbing the boundary keeps the
+# test at unit level, so they must not raise the pyramid level to integration.
+WEB_CLIENT_LEVEL_ROOTS = {
+    "django", "flask", "fastapi", "starlette", "rest_framework",
+    "httpx", "requests", "webtest", "werkzeug", "aiohttp",
+}
+
+
 def detect_pyramid_level(tree):
     """Map the test file to a pyramid level from its import roots: 'e2e' (browser
-    driver), 'integration' (web client or database driver: API and DB tests), or
-    'unit' (neither). Broadest wins. A real API/DB import in a test the author
-    treats as a unit test is itself the smell, surfaced by the level mismatch."""
+    driver), 'integration' (real web client or database driver: API and DB tests),
+    or 'unit' (neither). Broadest wins. A real API/DB import in a test the author
+    treats as a unit test is itself the smell, surfaced by the level mismatch.
+    HTTP mock libraries do not count as integration (they stub the boundary)."""
     roots = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -461,7 +474,7 @@ def detect_pyramid_level(tree):
             roots.add(node.module.split(".")[0])
     if roots & BROWSER_IMPORT_ROOTS:
         return "e2e"
-    if roots & (WEB_IMPORT_ROOTS | INTEGRATION_DB_ROOTS):
+    if roots & (WEB_CLIENT_LEVEL_ROOTS | INTEGRATION_DB_ROOTS):
         return "integration"
     return "unit"
 

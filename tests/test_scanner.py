@@ -3048,6 +3048,29 @@ def test_detect_pyramid_level_integration_on_web_import(tmp_path):
     assert fs and all(a.level == "integration" for a in fs)
 
 
+def test_http_mock_library_does_not_count_as_integration(tmp_path):
+    # importing only an HTTP stub/record library (responses/respx/requests_mock)
+    # means the boundary is mocked: the test stays unit, not integration.
+    for lib in ("responses", "respx", "requests_mock", "httpretty", "vcr"):
+        fs = _findings_of(tmp_path, """
+            import %s
+            def test_x():
+                assert True
+        """ % lib)
+        assert fs and all(a.level == "unit" for a in fs), lib
+
+
+def test_real_web_client_still_integration_even_with_mock(tmp_path):
+    # a real client present (requests) keeps it integration even if a stub is too
+    fs = _findings_of(tmp_path, """
+        import requests
+        import responses
+        def test_x():
+            assert True
+    """)
+    assert fs and all(a.level == "integration" for a in fs)
+
+
 def test_detect_pyramid_level_integration_on_db_import(tmp_path):
     fs = _findings_of(tmp_path, """
         import sqlalchemy
