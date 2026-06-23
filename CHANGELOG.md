@@ -17,6 +17,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   e2e, detected from the file's import roots) and a one-line fix hint. The text summary adds
   a per-level breakdown and the top fixes by frequency; JSON gains `level` and `fix` fields;
   SARIF carries the level as a tag.
+- `--config-audit` mode (project layer): reads the project's pytest/coverage config
+  (`pyproject.toml` `[tool.pytest.ini_options]`, `pytest.ini`, `tox.ini`, `setup.cfg`) and
+  reports the ways a suite stays green by configuration: PL2 (`filterwarnings` not promoted to
+  `error`), PL7 (no `--cov-fail-under` / `fail_under` coverage gate), PL8 (`addopts` stops the
+  run early with `-x`/`--maxfail`). Findings carry level `project` and a fix hint. The per-file
+  scan cannot see config; this closes the project-layer gap. Runtime-only project smells
+  (PL1/PL4/PL6) stay out of static scope.
 - `--output` accepts a directory (e.g. `.falsegreen/`): an extension-less or trailing-slash
   path, or an existing directory, receives `report.<ext>` for the chosen format. A path with
   an extension is still written as a single file. Parent directories are created in both cases.
