@@ -3070,8 +3070,7 @@ def test_json_finding_carries_level_and_fix(tmp_path):
     findings = run([_write(tmp_path / "test_j.py", "def test_x():\n    assert True\n")])
     d = json.loads(render_json(findings))[0]
     assert d["level"] == "unit"
-    assert d["fix"]  # C5 has a remediation hint
-    assert "constant" in d["fix"]
+    assert "constant" in d["fix"]  # C5's fix hint, present and meaningful
 
 
 def test_render_text_shows_level_and_fix(tmp_path):
