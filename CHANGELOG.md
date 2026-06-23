@@ -13,6 +13,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   strands the checks below it), C44 (numeric tautology, `len(x) >= 0`), C45 (empty
   `@pytest.mark.parametrize` list — zero cases run).
 - Documented test-pyramid coverage: unit, integration (API and database), and E2E.
+- Status report output: every finding now carries its pyramid level (unit / integration /
+  e2e, detected from the file's import roots) and a one-line fix hint. The text summary adds
+  a per-level breakdown and the top fixes by frequency; JSON gains `level` and `fix` fields;
+  SARIF carries the level as a tag.
+- `--output` accepts a directory (e.g. `.falsegreen/`): an extension-less or trailing-slash
+  path, or an existing directory, receives `report.<ext>` for the chosen format. A path with
+  an extension is still written as a single file. Parent directories are created in both cases.
 
 ## [0.4.0] - 2026-06-09
 

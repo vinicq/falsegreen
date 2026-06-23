@@ -211,9 +211,12 @@ falsegreen tests/                 # scan a folder or a single file
 falsegreen --staged               # only the test files staged in git
 falsegreen --format sarif         # text (default) | json | sarif | junit
 falsegreen --summary              # one-line "N scanned, M flagged" to stderr
-falsegreen --output report.sarif  # write the formatted output to a file
+falsegreen --output report.sarif  # write to a file
+falsegreen --output .falsegreen/  # write report.<ext> into a directory
 falsegreen --disable C6,C2b       # turn specific codes off
 ```
+
+Each finding is reported with its pyramid level (unit / integration / e2e, read from the file's imports) and a one-line fix hint, and the text summary breaks the findings down by level and lists the most common fixes. `--output` takes a file or a directory: an extension-less or trailing-slash path (e.g. `.falsegreen/`) receives `report.<ext>` for the chosen format. Reports are run artifacts; keep the output directory gitignored.
 
 `--format sarif` emits SARIF 2.1.0 (HIGH → error, LOW → warning) for GitHub code scanning and PR annotations. `--format junit` emits JUnit XML for CI dashboards.
 

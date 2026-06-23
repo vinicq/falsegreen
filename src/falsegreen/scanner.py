@@ -132,6 +132,64 @@ def group_of(code):
     return "false-positive"
 
 
+# One-line remediation per case: what to change so the test protects something.
+# Short, imperative, no trailing period. Surfaced in the status report (text +
+# JSON `fix` field). A code missing here renders no fix line, never crashes.
+FIX_HINTS = {
+    "C1":  "move the assertion out of the conditional so it always runs",
+    "C2":  "add an assertion that checks the behaviour under test",
+    "C2b": "assert the result of the call, not just that it ran",
+    "C3":  "narrow or remove the except so the assertion error propagates",
+    "C4":  "rename to test_* (or register it) so pytest collects it",
+    "C4b": "drop __init__ from the test class; use fixtures for setup",
+    "C5":  "assert the real behaviour, not a constant or tautology",
+    "C6":  "assert the value, not just that something came back",
+    "C6b": "assert by keyword/field, not by positional argument order",
+    "C7":  "compare against an independent expected value, not the subject itself",
+    "C8":  "use pytest.approx() or a tolerance instead of exact float equality",
+    "C9":  "match the specific exception type, not a broad base class",
+    "C11a":"compare against an oracle the test does not compute itself",
+    "C13": "use a real mock assertion (assert_called_once_with, ...)",
+    "C13b":"patch with autospec=True so wrong attribute/call names fail",
+    "C14": "write the expected value by hand; don't snapshot the code's own output",
+    "C16": "freeze time / seed randomness so the result is deterministic",
+    "C17": "remove the skip from the except, or narrow it, so failures surface",
+    "C18": "assert the value, not its str()/repr() formatting",
+    "C19": "wrap only the single call expected to raise in pytest.raises",
+    "C20": "move the assertion before the return/raise so it executes",
+    "C21": "add at least one assertion that runs unconditionally",
+    "C22": "await the unit before asserting in the async test",
+    "C23": "use a fixture or tmp_path instead of a real file at a literal path",
+    "C24": "reset the global in a fixture, or drop the module-level mutable state",
+    "C25": "add strict=True to xfail so an unexpected pass fails the suite",
+    "C27": "assert the exception is raised with pytest.raises; don't pass on it",
+    "C28": "assert on the bound exception (excinfo.value) content",
+    "C29": "set env via monkeypatch.setenv so it is restored after the test",
+    "C30": "activate the interceptor (@responses.activate or its context manager)",
+    "C31": "assert on the captured readouterr() output",
+    "C32": "add reason= to the skip marker to document why",
+    "C33": "assert the metric against a threshold",
+    "C34": "use the simpler, more idiomatic assert form",
+    "C35": "fix the flaky cause instead of retrying the test",
+    "C36": "give pytest.fail() a message explaining the failure",
+    "C37": "remove the duplicate parametrize case",
+    "C38": "rename one of the duplicate tests so both run",
+    "C39": "replace return with assert so pytest checks the comparison",
+    "C41": "assert the resulting state, not the in-place method's None return",
+    "C42": "evaluate the generator/lambda, or assert a concrete value",
+    "C43": "remove the mid-test skip, or move it to a decorator at the top",
+    "C44": "compare against a meaningful bound, not an always-true one",
+    "C45": "add at least one case to the parametrize list",
+    "CC":  "restore the commented-out assertion, or delete it",
+    "D1":  "add an assertion message to each assert",
+    "D3":  "remove the duplicate assertion",
+    "D4":  "add ids= to parametrize for readable case names",
+    "D5":  "extract the repeated setup into a fixture",
+    "D6":  "replace print() with an assertion, or remove it",
+    "M2":  "split the long test into focused cases",
+}
+
+
 # Real mock API assertion methods.
 MOCK_ASSERTS_VALID = {
     "assert_called", "assert_called_once", "assert_called_with",
@@ -380,6 +438,45 @@ BROWSER_IMPORT_ROOTS = {
     "selenium", "playwright", "splinter", "pytest_playwright",
     "helium", "pyppeteer", "seleniumbase",
 }
+# Real datastore drivers/ORMs. A test importing one of these crosses the I/O
+# boundary to a database, which is an integration test (the row IS the oracle).
+INTEGRATION_DB_ROOTS = {
+    "sqlalchemy", "sqlmodel", "psycopg", "psycopg2", "asyncpg", "aiomysql",
+    "pymysql", "mysql", "cx_Oracle", "oracledb", "pymongo", "mongoengine",
+    "motor", "redis", "alembic", "databases", "tortoise", "peewee", "pony",
+    "testcontainers", "pytest_postgresql", "pytest_mysql", "fakeredis",
+}
+
+
+# Real HTTP clients and web frameworks: a test importing one talks to an actual
+# (or test-client) API boundary, which is an integration test. This is a strict
+# subset of WEB_IMPORT_ROOTS - the HTTP mock/record/replay libraries there
+# (responses, httpretty, respx, aioresponses, vcr, requests_mock, pook,
+# pytest_httpserver) are deliberately excluded: stubbing the boundary keeps the
+# test at unit level, so they must not raise the pyramid level to integration.
+WEB_CLIENT_LEVEL_ROOTS = {
+    "django", "flask", "fastapi", "starlette", "rest_framework",
+    "httpx", "requests", "webtest", "werkzeug", "aiohttp",
+}
+
+
+def detect_pyramid_level(tree):
+    """Map the test file to a pyramid level from its import roots: 'e2e' (browser
+    driver), 'integration' (real web client or database driver: API and DB tests),
+    or 'unit' (neither). Broadest wins. A real API/DB import in a test the author
+    treats as a unit test is itself the smell, surfaced by the level mismatch.
+    HTTP mock libraries do not count as integration (they stub the boundary)."""
+    roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            roots.add(node.module.split(".")[0])
+    if roots & BROWSER_IMPORT_ROOTS:
+        return "e2e"
+    if roots & (WEB_CLIENT_LEVEL_ROOTS | INTEGRATION_DB_ROOTS):
+        return "integration"
+    return "unit"
 
 
 def detect_file_layer(tree):
@@ -1115,7 +1212,7 @@ def _autouse_fixture_resets(tree, globals_):
 # Findings
 # ---------------------------------------------------------------------------
 class Finding:
-    __slots__ = ("file", "line", "code", "detail", "conf", "snippet", "layer")
+    __slots__ = ("file", "line", "code", "detail", "conf", "snippet", "layer", "level")
 
     def __init__(self, file, line, code, detail=""):
         self.file = file
@@ -1125,6 +1222,7 @@ class Finding:
         self.conf = CASES[code][1]  # effective confidence; run() may override it
         self.snippet = ""           # normalized source at the finding; set in analyze_file
         self.layer = "logic"        # logic | web | browser; set per file in analyze_file
+        self.level = "unit"         # unit | integration | e2e; set per file in analyze_file
 
     def dict(self):
         title = CASES[self.code][0]
@@ -1136,6 +1234,8 @@ class Finding:
             "title": title,
             "detail": self.detail,
             "layer": self.layer,
+            "level": self.level,
+            "fix": FIX_HINTS.get(self.code, ""),
         }
 
 
@@ -2277,6 +2377,7 @@ def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
 
     collected = is_pytest_test_file(file)
     layer = detect_file_layer(tree)
+    level = detect_pyramid_level(tree)
     time_controlled = file_controls_time(tree)
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -2396,6 +2497,7 @@ def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
         if 1 <= f.line <= len(src_lines):
             f.snippet = " ".join(src_lines[f.line - 1].split())
         f.layer = layer
+        f.level = level
         kept.append(f)
     return kept
 
@@ -2430,16 +2532,39 @@ def render_text(findings):
             t = CASES[a.code][0]
             extra = ("  (%s)" % a.detail) if a.detail else ""
             out.append("  %s:%d  [%s] %s%s" % (a.file, a.line, a.code, t, extra))
+            hint = FIX_HINTS.get(a.code, "")
+            if hint:
+                out.append("      level: %s   fix: %s" % (a.level, hint))
+            else:
+                out.append("      level: %s" % a.level)
 
     block("HIGH confidence (almost certainly a false positive)", highs)
     block("LOW confidence (test smell, confirm by hand or with /falsegreen)", lows)
-    block("DIAGNOSTIC (readability — informational, exit 0)", diags)
-    block("COUPLING (fragility — informational, exit 0)", coups)
+    block("DIAGNOSTIC (readability - informational, exit 0)", diags)
+    block("COUPLING (fragility - informational, exit 0)", coups)
     n_diag, n_coup = len(diags), len(coups)
     summary = "\nSummary: %d high, %d low" % (len(highs), len(lows))
     if n_diag or n_coup:
         summary += ", %d diagnostic, %d coupling" % (n_diag, n_coup)
     out.append(summary + ".")
+
+    # Test-pyramid breakdown + the most common fixes, over the findings shown.
+    shown = highs + lows + diags + coups
+    if shown:
+        by_level = {}
+        by_code = {}
+        for a in shown:
+            by_level[a.level] = by_level.get(a.level, 0) + 1
+            by_code[a.code] = by_code.get(a.code, 0) + 1
+        order = ["unit", "integration", "e2e"]
+        levels = [lv for lv in order if lv in by_level] + \
+                 [lv for lv in sorted(by_level) if lv not in order]
+        out.append("By level: " + ", ".join("%s:%d" % (lv, by_level[lv]) for lv in levels))
+        top = sorted(by_code.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+        out.append("Top fixes:")
+        for code, n in top:
+            out.append("  %s (%d): %s" % (code, n, FIX_HINTS.get(code, CASES[code][0])))
+
     if highs or lows:
         out.append("Cases 12 and 18 (copied logic / wrong expected value) need the semantic")
         out.append("pass: run /falsegreen so the expected value is checked against intent.")
@@ -2448,6 +2573,27 @@ def render_text(findings):
 
 def print_text(findings):
     print(render_text(findings))
+
+
+_OUTPUT_EXT = {"text": "txt", "json": "json", "sarif": "sarif", "junit": "xml"}
+
+
+def resolve_output_path(path, fmt):
+    """Turn --output into a concrete file path. A directory (existing dir, a
+    trailing separator, or an extension-less name like '.falsegreen') receives
+    'report.<ext>' for the chosen format; anything else is treated as a file.
+    Missing parent directories are created either way."""
+    ext = _OUTPUT_EXT.get(fmt, "txt")
+    base = os.path.basename(path.rstrip("/\\"))
+    is_dir = (path.endswith(("/", "\\")) or os.path.isdir(path)
+              or os.path.splitext(base)[1] == "")
+    if is_dir:
+        os.makedirs(path, exist_ok=True)
+        return os.path.join(path, "report." + ext)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    return path
 
 
 def render_json(findings):
@@ -2487,7 +2633,8 @@ def render_sarif(findings):
             "ruleId": a.code,
             "level": _sarif_level(a.conf),
             "message": {"text": text},
-            "properties": {"tags": [CASES[a.code][2], "layer:" + a.layer]},
+            "properties": {"tags": [CASES[a.code][2], "layer:" + a.layer,
+                                     "level:" + a.level]},
             "locations": [{
                 "physicalLocation": {
                     "artifactLocation": {"uri": _rel_uri(a.file)},
@@ -2644,7 +2791,8 @@ def main(argv=None):
     ap.add_argument("--summary", action="store_true",
                     help="print a one-line scan summary to stderr")
     ap.add_argument("--output", default=None, metavar="PATH",
-                    help="write the formatted output to PATH instead of stdout")
+                    help="write the formatted output to PATH instead of stdout; "
+                         "a directory (e.g. .falsegreen/) gets report.<ext>")
     ap.add_argument("--disable", default="", help="comma-separated case codes to skip (e.g. C6,C2b)")
     ap.add_argument("--config", default=None,
                     help="path to a .falsegreen.toml or pyproject.toml (default: auto-discover in cwd)")
@@ -2678,8 +2826,11 @@ def main(argv=None):
     rendered = renderers[fmt](findings)
 
     if args.output:
-        with open(args.output, "w", encoding="utf-8") as fh:
+        dest = resolve_output_path(args.output, fmt)
+        with open(dest, "w", encoding="utf-8") as fh:
             fh.write(rendered + "\n")
+        if args.summary:
+            sys.stderr.write("falsegreen: wrote %s to %s\n" % (fmt, dest))
     else:
         print(rendered)
 
