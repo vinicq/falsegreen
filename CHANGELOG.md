@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- New codes from the consolidated catalog: C38 (two tests share a name — the later
+  overrides the first), C39 (`return`s a comparison instead of asserting it), C42 (`assert`
+  on a generator expression / lambda — always truthy), C43 (`pytest.skip()` after test logic
+  strands the checks below it), C44 (numeric tautology, `len(x) >= 0`), C45 (empty
+  `@pytest.mark.parametrize` list — zero cases run).
+- Documented test-pyramid coverage: unit, integration (API and database), and E2E.
+
 ## [0.4.0] - 2026-06-09
 
 ### Added

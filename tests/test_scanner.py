@@ -2843,3 +2843,183 @@ def test_c24_clean_for_immutable_global(tmp_path):
         def test_limit():
             assert LIMIT == 10
     """)
+
+
+# --- C38-C45: codes added from the consolidated catalog --------------------
+
+def test_c38_duplicate_test_name_module(tmp_path):
+    # Two top-level tests with the same name: the second overrides the first.
+    assert "C38" in scan_source(tmp_path, """
+        def test_login():
+            assert 1 == 1
+        def test_login():
+            assert 2 == 2
+    """)
+
+
+def test_c38_duplicate_test_name_in_class(tmp_path):
+    assert "C38" in scan_source(tmp_path, """
+        class TestAuth:
+            def test_login(self):
+                assert do() == 1
+            def test_login(self):
+                assert do() == 2
+    """)
+
+
+def test_no_c38_for_distinct_names(tmp_path):
+    assert "C38" not in scan_source(tmp_path, """
+        def test_a():
+            assert f() == 1
+        def test_b():
+            assert g() == 2
+    """)
+
+
+def test_c39_return_comparison_instead_of_assert(tmp_path):
+    assert "C39" in scan_source(tmp_path, """
+        def test_sum():
+            return add(2, 2) == 4
+    """)
+
+
+def test_no_c39_for_plain_assert(tmp_path):
+    assert "C39" not in scan_source(tmp_path, """
+        def test_sum():
+            assert add(2, 2) == 4
+    """)
+
+
+def test_c42_assert_generator_expression(tmp_path):
+    assert "C42" in scan_source(tmp_path, """
+        def test_items():
+            assert (x for x in get_items())
+    """)
+
+
+def test_c42_assert_lambda(tmp_path):
+    assert "C42" in scan_source(tmp_path, """
+        def test_cb():
+            assert lambda: do()
+    """)
+
+
+def test_no_c42_for_list_comprehension(tmp_path):
+    # A list comprehension can be empty, so the assertion is a real (weak) check.
+    assert "C42" not in scan_source(tmp_path, """
+        def test_items():
+            assert [x for x in get_items()]
+    """)
+
+
+def test_c43_skip_after_logic_strands_check(tmp_path):
+    assert "C43" in scan_source(tmp_path, """
+        import pytest
+        def test_flow():
+            result = build()
+            pytest.skip("not ready")
+            assert result == 42
+    """)
+
+
+def test_no_c43_for_skip_at_top(tmp_path):
+    assert "C43" not in scan_source(tmp_path, """
+        import pytest
+        def test_flow():
+            pytest.skip("blocked")
+            assert build() == 42
+    """)
+
+
+def test_c44_len_ge_zero_is_tautology(tmp_path):
+    assert "C44" in scan_source(tmp_path, """
+        def test_nonempty():
+            assert len(get_items()) >= 0
+    """)
+
+
+def test_c44_zero_le_len_is_tautology(tmp_path):
+    assert "C44" in scan_source(tmp_path, """
+        def test_nonempty():
+            assert 0 <= len(get_items())
+    """)
+
+
+def test_no_c44_for_real_len_check(tmp_path):
+    assert "C44" not in scan_source(tmp_path, """
+        def test_nonempty():
+            assert len(get_items()) >= 3
+    """)
+
+
+def test_c45_empty_parametrize_runs_zero_times(tmp_path):
+    assert "C45" in scan_source(tmp_path, """
+        import pytest
+        @pytest.mark.parametrize("n", [])
+        def test_n(n):
+            assert process(n) > 0
+    """)
+
+
+def test_no_c45_for_populated_parametrize(tmp_path):
+    assert "C45" not in scan_source(tmp_path, """
+        import pytest
+        @pytest.mark.parametrize("n", [1, 2, 3])
+        def test_n(n):
+            assert process(n) > 0
+    """)
+
+
+# --- Codex review fixes (each fix gets a test) -------------------------------
+
+def test_no_c43_for_non_pytest_skip_method(tmp_path):
+    # reader.skip() is a SUT/helper method, not pytest.skip — must not be C43.
+    assert "C43" not in scan_source(tmp_path, """
+        def test_reads():
+            reader = open_reader()
+            reader.skip(1)
+            assert reader.read() == 42
+    """)
+
+
+def test_c43_still_flags_real_mid_test_pytest_skip(tmp_path):
+    assert "C43" in scan_source(tmp_path, """
+        import pytest
+        def test_flow():
+            result = build()
+            pytest.skip("not ready")
+            assert result == 42
+    """)
+
+
+def test_no_c38_for_non_test_class(tmp_path):
+    # A plain helper class is not collected by pytest, so duplicate test_* helper
+    # methods are not a vanished test (no C38).
+    assert "C38" not in scan_source(tmp_path, """
+        class Helper:
+            def test_build(self):
+                return 1
+            def test_build(self):
+                return 2
+    """)
+
+
+def test_c38_still_flags_in_test_class(tmp_path):
+    assert "C38" in scan_source(tmp_path, """
+        class TestAuth:
+            def test_login(self):
+                assert do() == 1
+            def test_login(self):
+                assert do() == 2
+    """)
+
+
+def test_no_c17_for_non_pytest_skip_in_except(tmp_path):
+    # reader.skip() inside a broad except is not a pytest skip — not C17.
+    assert "C17" not in scan_source(tmp_path, """
+        def test_x():
+            try:
+                assert compute() == 42
+            except Exception:
+                reader.skip()
+    """)

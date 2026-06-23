@@ -105,6 +105,13 @@ CASES = {
     "C35": ("retry/repeat/flaky decorator masks flaky behaviour instead of fixing it", "low", "J1"),
     "C36": ("pytest.fail() called without a reason — the failure message is empty", "low", "J4"),
     "C37": ("duplicate test case in @pytest.mark.parametrize — same argument set runs the same scenario twice", "low", "J4"),
+    "C38": ("two test functions share a name — the second silently overrides the first, the first never runs", "high", "J1"),
+    "C39": ("test returns a comparison instead of asserting it — pytest ignores the value, nothing is checked", "high", "J1"),
+    "C41": ("assertion on an in-place method that returns None (sort/append/...) — trivially satisfied", "low", "J4"),
+    "C42": ("assertion on a generator expression or lambda — the object is always truthy", "high", "J2"),
+    "C43": ("pytest.skip() called after test logic — the verification below it may never run", "low", "J1"),
+    "C44": ("numeric tautology — len()/abs() compared so the result is always true", "high", "J2"),
+    "C45": ("empty @pytest.mark.parametrize list — the test is generated with zero cases and never runs", "high", "J1"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
     # --- diagnostic group (readability / observability; default off) ----------
     "D1":  ("multiple assertions without messages (assertion roulette)", "off", "J4"),
@@ -551,6 +558,22 @@ def is_call_to(node, *names):
     return any(target == n or target.endswith("." + n) for n in names)
 
 
+def is_pytest_skip_call(node):
+    """A genuine pytest skip: `pytest.skip(...)`, a bare imported `skip(...)`, or
+    `self.skipTest(...)`/`cls.skipTest(...)`. Excludes an arbitrary `obj.skip(...)`
+    method (e.g. a reader/cursor) that `is_call_to(..., 'skip')` would over-match."""
+    if not isinstance(node, ast.Call):
+        return False
+    if dotted_name(node.func) == "pytest.skip":
+        return True
+    if isinstance(node.func, ast.Name) and node.func.id == "skip":
+        return True
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "skipTest" \
+            and isinstance(node.func.value, ast.Name) and node.func.value.id in ("self", "cls"):
+        return True
+    return False
+
+
 def is_xunit_assert_call(node):
     if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
         return False
@@ -578,6 +601,51 @@ def assert_always_true(test):
         return True
     if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or):
         return any(constant_truthy(v) for v in test.values)
+    return False
+
+
+def assert_always_truthy_object(test):
+    """A generator expression or lambda is an object that is always truthy, so
+    `assert (x for x in y)` / `assert lambda: ...` can never fail (C42). A list,
+    set, or dict comprehension is NOT included: those can be empty, so the
+    assertion is a real (if weak) check."""
+    return isinstance(test, (ast.GeneratorExp, ast.Lambda))
+
+
+def _int_const(node):
+    """The integer value of a literal, including a unary minus; else None.
+    `True`/`False` are excluded (they are ints in Python but not numeric here)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) \
+            and not isinstance(node.value, bool):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        v = _int_const(node.operand)
+        return None if v is None else -v
+    return None
+
+
+def _is_len_or_abs_call(node):
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id in ("len", "abs") and len(node.args) == 1)
+
+
+def assert_numeric_tautology(test):
+    """len()/abs() compared so the result is always true: `len(x) >= 0`,
+    `0 <= len(x)`, `abs(x) >= 0`, `len(x) > -1`. len() and abs() are never
+    negative, so the comparison holds for every input and verifies nothing (C44)."""
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1):
+        return False
+    op, left, right = test.ops[0], test.left, test.comparators[0]
+    if _is_len_or_abs_call(left):
+        if isinstance(op, ast.GtE) and _int_const(right) == 0:
+            return True
+        if isinstance(op, ast.Gt) and _int_const(right) == -1:
+            return True
+    if _is_len_or_abs_call(right):
+        if isinstance(op, ast.LtE) and _int_const(left) == 0:
+            return True
+        if isinstance(op, ast.Lt) and _int_const(left) == -1:
+            return True
     return False
 
 
@@ -1512,6 +1580,12 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             test = n.test
             if assert_always_true(test):
                 findings.append(Finding(file, n.lineno, "C5"))
+            elif assert_always_truthy_object(test):
+                findings.append(Finding(file, n.lineno, "C42",
+                                        "a generator expression / lambda object is always truthy"))
+            elif assert_numeric_tautology(test):
+                findings.append(Finding(file, n.lineno, "C44",
+                                        "len()/abs() is never negative — this comparison is always true"))
             elif assert_self_compare(test) and not in_equality_semantics_test(func, test):
                 findings.append(Finding(file, n.lineno, "C7"))
             else:
@@ -1567,6 +1641,40 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
     if is_async_liar(func):
         findings.append(Finding(file, func.lineno, "C22"))
 
+    # C39: the test returns a comparison instead of asserting it. `return x == y`
+    # computes the boolean and hands it to pytest, which ignores a test's return
+    # value (and warns: PytestReturnNotNoneWarning). The comparison runs but
+    # nothing checks it, so the test is green no matter the result.
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Return) and isinstance(n.value, ast.Compare):
+            findings.append(Finding(file, n.lineno, "C39",
+                                    "use assert: pytest ignores the value a test returns"))
+
+    # C43: pytest.skip() / self.skipTest() in the middle of the body, after some
+    # logic has run, with a verification still below it. A skip at the top is a
+    # legitimate guard; a skip after the arrange/act strands the asserts under it
+    # so they never execute, and the test reports skipped rather than run. Move
+    # the skip (with its condition) above the logic.
+    _body = func.body
+    for _i, _stmt in enumerate(_body):
+        if isinstance(_stmt, ast.Expr) and isinstance(_stmt.value, ast.Call) \
+                and is_pytest_skip_call(_stmt.value):
+            _has_prior_logic = any(
+                not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant)
+                     and isinstance(s.value.value, str))
+                and not isinstance(s, ast.Pass)
+                for s in _body[:_i]
+            )
+            _has_later_check = any(
+                isinstance(x, ast.Assert)
+                for s in _body[_i + 1:] for x in ast.walk(s)
+            )
+            if _has_prior_logic and _has_later_check:
+                findings.append(Finding(file, _stmt.lineno, "C43",
+                                        "skip() after test logic skips the checks below it — "
+                                        "move it to the top with its condition"))
+            break
+
     # C20: a check that sits AFTER an unconditional terminator in the same block
     # (return / raise / break / continue / pytest.fail() / assert False) is dead
     # code, it never runs. Scanned per block body so a terminator in one branch
@@ -1580,7 +1688,7 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             body_has_check = block_has_assertion(n.body)
             for h in n.handlers:
                 skips = any(
-                    is_call_to(c, "pytest.skip", "skip", "skipTest")
+                    is_pytest_skip_call(c)
                     for c in ast.walk(h) if isinstance(c, ast.Call)
                 )
                 if skips and handler_broad(h):
@@ -1773,6 +1881,11 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
         if len(d.args) < 2:
             continue
         cases_arg = d.args[1]
+        # C45: an empty argvalues list means pytest generates zero cases — the
+        # test is collected but never runs, and the suite stays green. high.
+        if isinstance(cases_arg, (ast.List, ast.Tuple)) and len(cases_arg.elts) == 0:
+            findings.append(Finding(file, d.lineno, "C45",
+                                    "empty parametrize list — the test runs zero times"))
         if isinstance(cases_arg, (ast.List, ast.Tuple)) and len(cases_arg.elts) > 2:
             findings.append(Finding(file, d.lineno, "D4",
                                     "%d cases without ids=" % len(cases_arg.elts)))
@@ -2214,6 +2327,30 @@ def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
                                              controls_time=time_controlled,
                                              long_test_threshold=long_test_threshold,
                                              inline_setup_threshold=inline_setup_threshold)
+
+    # C38: two test functions/methods in the same scope share a name. Python
+    # binds the later def over the earlier, so the first test silently never runs
+    # — it disappears from the suite with no error. Checked at module scope and
+    # inside each class body.
+    if collected:
+        def _flag_duplicate_test_names(defs):
+            seen = {}
+            for d in defs:
+                if isinstance(d, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                        and d.name.startswith("test"):
+                    if d.name in seen:
+                        findings.append(Finding(
+                            file, d.lineno, "C38",
+                            "'%s' is defined again here — the earlier test never runs" % d.name))
+                    seen[d.name] = d.lineno
+        _flag_duplicate_test_names(tree.body)
+        for _node in tree.body:
+            # Only classes pytest actually collects: Test*-named or TestCase
+            # subclasses. A plain helper class with duplicate test_* methods is
+            # not collected, so its duplicates are not a vanished test (no C38).
+            if isinstance(_node, ast.ClassDef) \
+                    and (_node.name.startswith("Test") or is_testcase_subclass(_node)):
+                _flag_duplicate_test_names(_node.body)
 
     # C24: module-level mutable global mutated inside a test function — the
     # mutation outlives the test and can pollute later tests in the same session.
