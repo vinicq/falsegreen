@@ -2968,3 +2968,58 @@ def test_no_c45_for_populated_parametrize(tmp_path):
         def test_n(n):
             assert process(n) > 0
     """)
+
+
+# --- Codex review fixes (each fix gets a test) -------------------------------
+
+def test_no_c43_for_non_pytest_skip_method(tmp_path):
+    # reader.skip() is a SUT/helper method, not pytest.skip — must not be C43.
+    assert "C43" not in scan_source(tmp_path, """
+        def test_reads():
+            reader = open_reader()
+            reader.skip(1)
+            assert reader.read() == 42
+    """)
+
+
+def test_c43_still_flags_real_mid_test_pytest_skip(tmp_path):
+    assert "C43" in scan_source(tmp_path, """
+        import pytest
+        def test_flow():
+            result = build()
+            pytest.skip("not ready")
+            assert result == 42
+    """)
+
+
+def test_no_c38_for_non_test_class(tmp_path):
+    # A plain helper class is not collected by pytest, so duplicate test_* helper
+    # methods are not a vanished test (no C38).
+    assert "C38" not in scan_source(tmp_path, """
+        class Helper:
+            def test_build(self):
+                return 1
+            def test_build(self):
+                return 2
+    """)
+
+
+def test_c38_still_flags_in_test_class(tmp_path):
+    assert "C38" in scan_source(tmp_path, """
+        class TestAuth:
+            def test_login(self):
+                assert do() == 1
+            def test_login(self):
+                assert do() == 2
+    """)
+
+
+def test_no_c17_for_non_pytest_skip_in_except(tmp_path):
+    # reader.skip() inside a broad except is not a pytest skip — not C17.
+    assert "C17" not in scan_source(tmp_path, """
+        def test_x():
+            try:
+                assert compute() == 42
+            except Exception:
+                reader.skip()
+    """)

@@ -558,6 +558,22 @@ def is_call_to(node, *names):
     return any(target == n or target.endswith("." + n) for n in names)
 
 
+def is_pytest_skip_call(node):
+    """A genuine pytest skip: `pytest.skip(...)`, a bare imported `skip(...)`, or
+    `self.skipTest(...)`/`cls.skipTest(...)`. Excludes an arbitrary `obj.skip(...)`
+    method (e.g. a reader/cursor) that `is_call_to(..., 'skip')` would over-match."""
+    if not isinstance(node, ast.Call):
+        return False
+    if dotted_name(node.func) == "pytest.skip":
+        return True
+    if isinstance(node.func, ast.Name) and node.func.id == "skip":
+        return True
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "skipTest" \
+            and isinstance(node.func.value, ast.Name) and node.func.value.id in ("self", "cls"):
+        return True
+    return False
+
+
 def is_xunit_assert_call(node):
     if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
         return False
@@ -1642,7 +1658,7 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
     _body = func.body
     for _i, _stmt in enumerate(_body):
         if isinstance(_stmt, ast.Expr) and isinstance(_stmt.value, ast.Call) \
-                and is_call_to(_stmt.value, "pytest.skip", "skip", "skipTest"):
+                and is_pytest_skip_call(_stmt.value):
             _has_prior_logic = any(
                 not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant)
                      and isinstance(s.value.value, str))
@@ -1672,7 +1688,7 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             body_has_check = block_has_assertion(n.body)
             for h in n.handlers:
                 skips = any(
-                    is_call_to(c, "pytest.skip", "skip", "skipTest")
+                    is_pytest_skip_call(c)
                     for c in ast.walk(h) if isinstance(c, ast.Call)
                 )
                 if skips and handler_broad(h):
@@ -2329,7 +2345,11 @@ def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
                     seen[d.name] = d.lineno
         _flag_duplicate_test_names(tree.body)
         for _node in tree.body:
-            if isinstance(_node, ast.ClassDef):
+            # Only classes pytest actually collects: Test*-named or TestCase
+            # subclasses. A plain helper class with duplicate test_* methods is
+            # not collected, so its duplicates are not a vanished test (no C38).
+            if isinstance(_node, ast.ClassDef) \
+                    and (_node.name.startswith("Test") or is_testcase_subclass(_node)):
                 _flag_duplicate_test_names(_node.body)
 
     # C24: module-level mutable global mutated inside a test function — the
