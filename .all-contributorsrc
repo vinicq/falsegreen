@@ -1,0 +1,41 @@
+{
+  "projectName": "falsegreen",
+  "projectOwner": "vinicq",
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "files": [
+    "README.md"
+  ],
+  "imageSize": 100,
+  "commit": false,
+  "commitConvention": "angular",
+  "contributorsSortAlphabetically": false,
+  "contributorsPerLine": 7,
+  "skipCi": true,
+  "contributors": [
+    {
+      "login": "vinicq",
+      "name": "Vinicius Queiroz",
+      "avatar_url": "https://avatars.githubusercontent.com/u/78210890?v=4",
+      "profile": "https://vinicq.github.io/md-bridge/",
+      "contributions": [
+        "code",
+        "doc",
+        "ideas",
+        "maintenance",
+        "infra",
+        "test",
+        "research"
+      ]
+    },
+    {
+      "login": "homesellerq-coder",
+      "name": "Home Seller",
+      "avatar_url": "https://avatars.githubusercontent.com/u/294912019?v=4",
+      "profile": "https://github.com/homesellerq-coder",
+      "contributions": [
+        "code"
+      ]
+    }
+  ]
+}
