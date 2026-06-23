@@ -3138,3 +3138,80 @@ def test_fix_hints_cover_every_case(tmp_path):
     from falsegreen.scanner import CASES, FIX_HINTS
     missing = [c for c in CASES if c not in FIX_HINTS]
     assert missing == [], "codes without a fix-hint: %s" % missing
+
+
+# --- PL config-audit: project-layer checks -----------------------------------
+
+from falsegreen.scanner import audit_config  # noqa: E402
+
+
+def test_config_audit_flags_all_when_pyproject_bare(tmp_path):
+    _write(tmp_path / "pyproject.toml", """
+        [tool.pytest.ini_options]
+        addopts = "-x"
+    """)
+    codes = {f.code for f in audit_config(str(tmp_path))}
+    assert codes == {"PL2", "PL7", "PL8"}
+
+
+def test_config_audit_clean_pyproject(tmp_path):
+    _write(tmp_path / "pyproject.toml", """
+        [tool.pytest.ini_options]
+        addopts = "--cov-fail-under=80"
+        filterwarnings = ["error"]
+    """)
+    assert audit_config(str(tmp_path)) == []
+
+
+def test_config_audit_cov_gate_via_coverage_table(tmp_path):
+    _write(tmp_path / "pyproject.toml", """
+        [tool.pytest.ini_options]
+        filterwarnings = ["error"]
+        [tool.coverage.report]
+        fail_under = 90
+    """)
+    codes = {f.code for f in audit_config(str(tmp_path))}
+    assert "PL7" not in codes  # coverage gate satisfied via [tool.coverage.report]
+
+
+def test_config_audit_pl8_maxfail(tmp_path):
+    _write(tmp_path / "pyproject.toml", """
+        [tool.pytest.ini_options]
+        addopts = "--maxfail=1"
+        filterwarnings = ["error"]
+        [tool.coverage.report]
+        fail_under = 1
+    """)
+    assert {f.code for f in audit_config(str(tmp_path))} == {"PL8"}
+
+
+def test_config_audit_reads_pytest_ini(tmp_path):
+    _write(tmp_path / "pytest.ini", "[pytest]\naddopts = -x\n")
+    codes = {f.code for f in audit_config(str(tmp_path))}
+    assert "PL8" in codes and "PL2" in codes
+
+
+def test_config_audit_no_pytest_config_is_empty(tmp_path):
+    assert audit_config(str(tmp_path)) == []
+
+
+def test_config_audit_finding_carries_level_and_fix(tmp_path):
+    _write(tmp_path / "pyproject.toml", "[tool.pytest.ini_options]\naddopts = \"-x\"\n")
+    f = next(x for x in audit_config(str(tmp_path)) if x.code == "PL8")
+    d = f.dict()
+    assert d["level"] == "project"
+    assert "addopts" in d["fix"]
+
+
+def test_config_audit_cli_exit_and_output(tmp_path):
+    _write(tmp_path / "pyproject.toml", "[tool.pytest.ini_options]\naddopts = \"-x\"\n")
+    out = tmp_path / "rep.json"
+    rc = main(["--config-audit", "--json", "--output", str(out), str(tmp_path)])
+    assert rc == 10
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert {d["code"] for d in doc} == {"PL2", "PL7", "PL8"}
+
+
+def test_pl_codes_have_fix_hints():
+    from falsegreen.scanner import FIX_HINTS
+    assert {"PL2", "PL7", "PL8"} <= set(FIX_HINTS)

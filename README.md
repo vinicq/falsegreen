@@ -213,8 +213,11 @@ falsegreen --format sarif         # text (default) | json | sarif | junit
 falsegreen --summary              # one-line "N scanned, M flagged" to stderr
 falsegreen --output report.sarif  # write to a file
 falsegreen --output .falsegreen/  # write report.<ext> into a directory
+falsegreen --config-audit         # audit pytest/coverage config (project-layer PL codes)
 falsegreen --disable C6,C2b       # turn specific codes off
 ```
+
+`--config-audit` is a separate mode: instead of scanning test files, it reads the project's pytest and coverage config (`pyproject.toml`, `pytest.ini`, `tox.ini`, `setup.cfg`) and reports the project-layer ways a suite stays green by configuration: `PL2` (`filterwarnings` does not promote warnings to errors), `PL7` (no coverage gate), `PL8` (`addopts` stops the run early with `-x`/`--maxfail`). These complement the per-file scan, which cannot see config.
 
 Each finding is reported with its pyramid level (unit / integration / e2e, read from the file's imports) and a one-line fix hint, and the text summary breaks the findings down by level and lists the most common fixes. `--output` takes a file or a directory: an extension-less or trailing-slash path (e.g. `.falsegreen/`) receives `report.<ext>` for the chosen format. Reports are run artifacts; keep the output directory gitignored.
 
