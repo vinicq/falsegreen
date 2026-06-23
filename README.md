@@ -67,7 +67,7 @@ The plain-language guide, with a real-world analogy and before/after for each ca
 
 ## What it detects
 
-The scanner ships 34 active false-positive codes across the five families, plus `CC` (commented-out assert). HIGH findings block a commit; LOW ones warn. Cases that require reading production intent (10, 11, 12, 15, 18) need the semantic layer.
+The scanner ships 40 active false-positive codes across the five families, plus `CC` (commented-out assert). HIGH findings block a commit; LOW ones warn. Cases that require reading production intent (10, 11, 12, 15, 18) need the semantic layer.
 
 | # | Case | Why it fools you | Code | Conf |
 |---|---|---|---|---|
@@ -119,6 +119,21 @@ Eleven additional codes covering the most common patterns in real test suites:
 | `C37` | Duplicate case in `@pytest.mark.parametrize` — same argument set runs twice | LOW |
 | `CC` | Commented-out assert | LOW |
 
+Six more from the consolidated catalog:
+
+| Code | Pattern | Conf |
+|---|---|---|
+| `C38` | Two test functions share a name — the later one silently overrides the first | HIGH |
+| `C39` | Test `return`s a comparison instead of asserting it — pytest ignores the value | HIGH |
+| `C42` | `assert` on a generator expression or lambda — the object is always truthy | HIGH |
+| `C43` | `pytest.skip()` after test logic — the checks below it never run | LOW |
+| `C44` | Numeric tautology (`len(x) >= 0`, `abs(x) >= 0`) — always true | HIGH |
+| `C45` | Empty `@pytest.mark.parametrize` list — the test is generated with zero cases | HIGH |
+
+`C41` (an assertion on an in-place method that returns `None`, like `assert not lst.sort()`)
+is deliberately left to the semantic pass: whether it is trivially green depends on the
+receiver's type, which the parser cannot see.
+
 **How the scanner detects.** It parses each test file with Python's `ast` module and inspects the tree. It never imports or runs the test, so a malicious or broken test cannot execute through it. Detection is structural: an `assert` whose expression is a constant, both sides of a comparison AST-identical, a `pytest.raises` argument of `Exception`, a mock-named receiver with a no-parentheses `assert_called_once`, a `Test*` class with `__init__`, and so on. Precision is the priority for HIGH codes, because they block commits: each one is stress-tested against look-alikes (optional-dependency skips, abstract base test classes, `@patch`-injected mocks, exact-count `len(x) == N`) and stays quiet on them.
 
 **How the semantic pass detects.** Cases 10, 11, 12, 15, and 18 cannot be proven by structure. A parser sees a mock but cannot tell whether it replaced an edge (network, disk, clock) or the thing under test. It sees an arithmetic expression but cannot tell whether the expected value was derived independently or copied from the code. That judgment requires reading the production code against an independent oracle — that is what [falsegreen-skill](https://github.com/vinicq/falsegreen-skill) does.
@@ -133,6 +148,25 @@ A tool that flags tests for not protecting anything has to show it protects some
 - **The semantic pass (LLM).** Validation for the LLM-based semantic layer is tracked in [falsegreen-skill](https://github.com/vinicq/falsegreen-skill), where benchmark corpora for Python and TypeScript are maintained with precision/recall measurements.
 
 ---
+
+## Test levels (the pyramid)
+
+falsegreen scans tests at every level of the pyramid. Discovery is level-agnostic - it reads
+any pytest/unittest file - but a few codes are read in light of the level, so a valid pattern
+at one level is not flagged at another.
+
+- **Unit:** a function with its boundaries doubled. The oracle is `assert` (or `self.assert*`).
+- **Integration (API and database):** API tests through `requests`/`httpx` or a framework
+  TestClient (FastAPI, Flask, Django), database tests against a real datastore (SQLAlchemy,
+  the Django ORM, testcontainers). These cross the I/O boundary on purpose, so the response
+  or row IS the verification at that level. The weak-check code (C6) relaxes in the web layer,
+  where the presence of a response is a real check.
+- **E2E:** Playwright for Python and Selenium. `expect(locator).to_be_visible()` is the oracle.
+
+A real API or database hit inside a test that claims to be a unit test is itself the smell
+(mystery guest, resource optimism, state leak), not the level of the test. C23 (real file at
+a literal path), C29 (`os.environ` mutated), and C30 (mock interceptor never activated) flag
+those forms.
 
 ## Diagnostic and coupling codes (opt-in)
 
