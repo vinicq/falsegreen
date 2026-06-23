@@ -1,0 +1,135 @@
+name: Credit contributor on merge
+
+# Runs after every merged pull request from an external contributor. Infers
+# which contribution categories the change touched (code, doc, test, infra),
+# updates `.all-contributorsrc` via all-contributors-cli, regenerates the
+# README block, and opens a `chore(docs): credit @<author>` PR.
+#
+# Maintainer PRs (vinicq) and bot PRs are skipped at the job-level `if`. PRs
+# that close without merging never reach this workflow (the `merged == true`
+# guard). Mirrors the credit-contributor workflow used in md-bridge.
+#
+# The credit PR opens through `gh pr create`, so the repo setting
+# Settings -> Actions -> General -> Workflow permissions ->
+# "Allow GitHub Actions to create and approve pull requests" must be ON.
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: credit-contributor
+  cancel-in-progress: false
+
+jobs:
+  credit:
+    name: Credit @${{ github.event.pull_request.user.login }}
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.user.login != 'vinicq' &&
+      github.event.pull_request.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out the default branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Determine contribution types from the merged diff
+        id: types
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          files=$(gh pr diff "$PR_NUMBER" -R "$GITHUB_REPOSITORY" --name-only)
+          echo "Changed files:"; echo "$files"; echo "---"
+
+          types=()
+          src_re='\.(py|ts|tsx|js|jsx|mjs|cjs|mts|cts|robot|resource)$'
+          if echo "$files" | grep -qE "$src_re"; then
+            non_test=$(echo "$files" | grep -E "$src_re" \
+              | grep -vE '(^|/)tests?/|(^|/)test_|_test\.|\.(test|spec)\.' || true)
+            [ -n "$non_test" ] && types+=("code")
+          fi
+          if echo "$files" | grep -qE '(^|/)tests?/|(^|/)test_|_test\.py$|\.(test|spec)\.(ts|tsx|js|jsx|mjs)$'; then
+            types+=("test")
+          fi
+          if echo "$files" | grep -qE '(\.md$|(^|/)docs/|(^|/)(README|CONTRIBUTING|CHANGELOG|SECURITY|CODE_OF_CONDUCT|CREDITS))'; then
+            types+=("doc")
+          fi
+          if echo "$files" | grep -qE '(^|/)\.github/|Dockerfile|(^|/)pyproject\.toml$|(^|/)package\.json$|(^|/)tsconfig|\.pre-commit-config'; then
+            types+=("infra")
+          fi
+          [ ${#types[@]} -eq 0 ] && types+=("code")
+          joined=$(printf "%s\n" "${types[@]}" | sort -u | paste -sd, -)
+          echo "Inferred categories: $joined"
+          echo "types=$joined" >> "$GITHUB_OUTPUT"
+
+      - name: Add contributor and regenerate the README block
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          TYPES: ${{ steps.types.outputs.types }}
+        run: |
+          set -euo pipefail
+          # all-contributors-cli `add` is declarative, not additive: it narrows
+          # the entry to exactly the types passed. Read existing types, union
+          # with the inferred ones, and pass the full set.
+          existing=$(node -e "const c=JSON.parse(require('fs').readFileSync('.all-contributorsrc','utf8')).contributors||[];const u=process.env.AUTHOR.toLowerCase();const m=c.find(x=>x.login.toLowerCase()===u);process.stdout.write(m?(m.contributions||[]).join(','):'')")
+          combined=$(printf '%s,%s' "$existing" "$TYPES" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)
+          echo "Existing: ${existing:-<none>}"; echo "Combined: $combined"
+          npx -y all-contributors-cli@latest add "$AUTHOR" "$combined"
+          npx -y all-contributors-cli@latest generate
+
+      - name: Check whether anything changed
+        id: changes
+        run: |
+          if git diff --quiet -- .all-contributorsrc README.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open the credit PR
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          TYPES: ${{ steps.types.outputs.types }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="chore/credit-${AUTHOR}-${PR_NUMBER}"
+          git checkout -b "$branch"
+          git add .all-contributorsrc README.md
+          git commit -m "chore(docs): credit @${AUTHOR} for ${TYPES} (PR #${PR_NUMBER})"
+          git push -u origin "$branch" --force-with-lease
+          body_file=$(mktemp)
+          cat > "$body_file" <<EOF
+          Automated post-merge credit update for #${PR_NUMBER}.
+
+          Categories inferred from the merged diff: \`${TYPES}\`. The categories come from the all-contributors specification: <https://allcontributors.org/docs/en/emoji-key>. Edit \`.all-contributorsrc\` here if a category is off.
+          EOF
+          if existing=$(gh pr list -R "$GITHUB_REPOSITORY" --head "$branch" --json number --jq '.[0].number' 2>/dev/null) && [ -n "$existing" ]; then
+            gh pr comment "$existing" -R "$GITHUB_REPOSITORY" --body "Re-ran auto-credit. Categories: \`${TYPES}\`."
+          else
+            gh pr create -R "$GITHUB_REPOSITORY" --base main \
+              --title "chore(docs): credit @${AUTHOR}" \
+              --body-file "$body_file" --assignee "vinicq"
+          fi
+          rm -f "$body_file"
