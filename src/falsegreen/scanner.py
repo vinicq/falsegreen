@@ -121,10 +121,18 @@ CASES = {
     "D6":  ("print() in test body — debug artifact that bypasses the test oracle", "off", "J4"),
     # --- coupling group (fragility / maintainability; default off) ------------
     "M2":  ("test method body exceeds the configured line-count threshold", "off", "J5"),
+    # --- project layer (config-audit only; emitted by --config-audit, never by
+    #     the per-file scan). The suite goes green by configuration, not by a
+    #     smell inside any one test file. ---------------------------------------
+    "PL2": ("filterwarnings does not promote warnings to errors - deprecations and runtime warnings pass silently", "low", "J1"),
+    "PL7": ("no coverage gate (--cov-fail-under / fail_under) - coverage can fall to zero and the suite still passes", "low", "J5"),
+    "PL8": ("addopts stops the run early (-x / --maxfail / --exitfirst) - the reported test count is incomplete", "low", "J5"),
 }
 
 def group_of(code):
-    """Smell category inferred from code prefix: 'false-positive' | 'diagnostic' | 'coupling'."""
+    """Smell category inferred from code prefix: 'false-positive' | 'diagnostic' | 'coupling' | 'project'."""
+    if code.startswith("PL"):
+        return "project"
     if code.startswith("D"):
         return "diagnostic"
     if code.startswith("M"):
@@ -187,6 +195,9 @@ FIX_HINTS = {
     "D5":  "extract the repeated setup into a fixture",
     "D6":  "replace print() with an assertion, or remove it",
     "M2":  "split the long test into focused cases",
+    "PL2": "set filterwarnings = error in the pytest config so warnings fail the suite",
+    "PL7": "add --cov-fail-under=<N> (or [tool.coverage.report] fail_under) to gate coverage",
+    "PL8": "drop -x/--maxfail from addopts so the full suite runs and the count is complete",
 }
 
 
@@ -2780,6 +2791,81 @@ def run(paths, staged=False, disable=None, config=None, config_path=None,
     return findings
 
 
+# ---------------------------------------------------------------------------
+# Project-layer audit (--config-audit): the suite goes green by configuration,
+# not by a smell inside any one test file. Reads the pytest/coverage config.
+# ---------------------------------------------------------------------------
+def _pytest_options(start):
+    """Locate the pytest config in `start` and return (path, opts) where opts has
+    'addopts' (str), 'filterwarnings' (list[str]) and 'cov_gate' (bool: a coverage
+    threshold is configured somewhere). Returns (None, None) if no pytest config
+    is found. Searches pyproject.toml, pytest.ini, tox.ini, setup.cfg in order."""
+    import configparser
+
+    def _cov_in_pyproject(raw):
+        rep = (raw.get("tool", {}).get("coverage", {}).get("report", {})
+               if isinstance(raw, dict) else {})
+        return isinstance(rep, dict) and rep.get("fail_under") is not None
+
+    pp = os.path.join(start, "pyproject.toml")
+    if os.path.isfile(pp):
+        raw = _read_toml(pp) or {}
+        ini = raw.get("tool", {}).get("pytest", {}).get("ini_options")
+        if ini is not None:
+            addopts = ini.get("addopts", "")
+            if isinstance(addopts, list):
+                addopts = " ".join(str(a) for a in addopts)
+            fw = ini.get("filterwarnings", [])
+            fw = [fw] if isinstance(fw, str) else [str(x) for x in (fw or [])]
+            cov = "--cov-fail-under" in addopts or _cov_in_pyproject(raw)
+            return pp, {"addopts": addopts, "filterwarnings": fw, "cov_gate": cov}
+
+    for name, section in (("pytest.ini", "pytest"), ("tox.ini", "pytest"),
+                          ("setup.cfg", "tool:pytest")):
+        path = os.path.join(start, name)
+        if not os.path.isfile(path):
+            continue
+        cp = configparser.ConfigParser()
+        try:
+            cp.read(path, encoding="utf-8")
+        except Exception:
+            continue
+        if not cp.has_section(section):
+            continue
+        addopts = cp.get(section, "addopts", fallback="")
+        fw_raw = cp.get(section, "filterwarnings", fallback="")
+        fw = [ln.strip() for ln in fw_raw.splitlines() if ln.strip()]
+        cov = "--cov-fail-under" in addopts
+        if not cov and cp.has_section("coverage:report"):
+            cov = cp.get("coverage:report", "fail_under", fallback="") != ""
+        return path, {"addopts": addopts, "filterwarnings": fw, "cov_gate": cov}
+
+    return None, None
+
+
+def audit_config(start=None):
+    """Project-layer audit. Read the pytest/coverage config and report the PL
+    codes: ways the suite can report green by configuration. Findings carry the
+    config file as `file` and level 'project'. Returns [] if no pytest config."""
+    base = start or os.getcwd()
+    path, opts = _pytest_options(base)
+    findings = []
+    if not path:
+        return findings
+    addopts = opts["addopts"] or ""
+    promotes = any(f.split(":", 1)[0].strip() == "error" for f in opts["filterwarnings"])
+    if not promotes:
+        findings.append(Finding(path, 1, "PL2"))
+    if not opts["cov_gate"]:
+        findings.append(Finding(path, 1, "PL7"))
+    if re.search(r"(^|\s)(-x|--exitfirst|--maxfail)\b", addopts):
+        findings.append(Finding(path, 1, "PL8"))
+    for f in findings:
+        f.level = "project"
+        f.layer = "config"
+    return findings
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="falsegreen",
                                  description="False-positive scanner for Python tests.")
@@ -2793,6 +2879,9 @@ def main(argv=None):
     ap.add_argument("--output", default=None, metavar="PATH",
                     help="write the formatted output to PATH instead of stdout; "
                          "a directory (e.g. .falsegreen/) gets report.<ext>")
+    ap.add_argument("--config-audit", action="store_true",
+                    help="audit the project's pytest/coverage config for project-layer "
+                         "false-green (PL codes) instead of scanning test files")
     ap.add_argument("--disable", default="", help="comma-separated case codes to skip (e.g. C6,C2b)")
     ap.add_argument("--config", default=None,
                     help="path to a .falsegreen.toml or pyproject.toml (default: auto-discover in cwd)")
@@ -2815,6 +2904,21 @@ def main(argv=None):
         sys.stderr.write("falsegreen: wrote %d fingerprint(s) to %s\n"
                          % (n, args.write_baseline))
         return 0
+
+    if args.config_audit:
+        base = next((p for p in args.paths if os.path.isdir(p)), None) or os.getcwd()
+        findings = audit_config(base)
+        fmt = "json" if args.json else args.format
+        renderers = {"text": render_text, "json": render_json,
+                     "sarif": render_sarif, "junit": render_junit}
+        rendered = renderers[fmt](findings)
+        if args.output:
+            dest = resolve_output_path(args.output, fmt)
+            with open(dest, "w", encoding="utf-8") as fh:
+                fh.write(rendered + "\n")
+        else:
+            print(rendered)
+        return 10 if findings else 0
 
     baseline = load_baseline(args.baseline) if args.baseline else None
     findings = run(args.paths, staged=args.staged, disable=disable,
