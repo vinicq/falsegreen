@@ -1,0 +1,14 @@
+# Enables the opt-in codes so `falsegreen examples/ --config examples/enable-optin.toml`
+# also flags the C22 async-liar and the diagnostic/coupling samples.
+# These are off by default because they warn about maintainability, not a test
+# that lies about being green.
+long_test_threshold = 5
+
+[severity]
+C22 = "low"   # async test that asserts but never awaits
+D1 = "info"   # Assertion Roulette
+D3 = "info"   # Duplicate Assert
+D4 = "info"   # Unnamed Parametrize
+D5 = "info"   # Inline Setup Excess
+D6 = "info"   # Debug Print
+M2 = "info"   # Long Test Method

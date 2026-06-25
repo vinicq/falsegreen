@@ -22,6 +22,7 @@ The checks are grounded in the rotten-green-test research (Soares 2023; Delplanq
 - [Why this exists](#why-this-exists)
 - [The methodology](#the-methodology)
 - [What it detects](#what-it-detects)
+- [Codes the scanner does not detect](#codes-the-scanner-does-not-detect)
 - [Diagnostic and coupling codes](#diagnostic-and-coupling-codes-opt-in)
 - [The two layers](#the-two-layers)
 - [Install and use](#install-and-use)
@@ -130,9 +131,48 @@ Six more from the consolidated catalog:
 | `C44` | Numeric tautology (`len(x) >= 0`, `abs(x) >= 0`) — always true | HIGH |
 | `C45` | Empty `@pytest.mark.parametrize` list — the test is generated with zero cases | HIGH |
 
-`C41` (an assertion on an in-place method that returns `None`, like `assert not lst.sort()`)
-is deliberately left to the semantic pass: whether it is trivially green depends on the
-receiver's type, which the parser cannot see.
+### Codes the scanner does not detect
+
+The static layer is close to saturated. A handful of catalog codes are deliberately
+left out because a per-file AST pass cannot judge them without a high false-positive
+rate, or because they are not a per-file property at all. They are listed here so the
+gap is honest, not hidden. The reasoning follows the consolidated catalog.
+
+**High false-positive without deeper analysis (left to the semantic pass).**
+
+- `C40` (assert on a `Mock` attribute with no spec, always truthy): without spec or
+  autospec analysis the false-positive rate is high, since the same shape is a valid
+  check on a real object. The concept lives in the skill (Family F7).
+- `C41` (assert on an in-place method that returns `None`, like `assert not lst.sort()`):
+  whether it is trivially green depends on the receiver's type, which the parser cannot
+  see. Restricted to known mutators it would still misfire on look-alikes, so it is left
+  to the semantic pass.
+- `C46` (real network or database call with no double): legitimate at the integration
+  level, where crossing the boundary is the point. Flagging it per file, without knowing
+  the test's layer, is a high false-positive. It belongs to the skill and the project
+  layer.
+- `C47` (assertion depends on dict or set ordering): most collections are used
+  deterministically, so flagging unordered-vs-sequence comparisons fires far too often.
+  It stays a note in the skill.
+
+**Runtime and culture (not a per-file property).** The `PL` series is about how the
+suite is invoked and configured, not what a single test file contains. `PL2`, `PL7`,
+and `PL8` are already covered by `--config-audit` (warnings not promoted to errors, no
+coverage gate, `addopts` that stops the run early). The rest need execution or pipeline
+inspection: `PL1` (`python -O` / `PYTHONOPTIMIZE` strips every `assert` at runtime),
+`PL4` (a collection error counted as "0 tests" while CI stays green), and
+`PL3`, `PL5`, `PL6` (a coverage pragma in production code, `importorskip` hiding a broken
+import, CI running a subset via `-k` / `-m`). They are documented, not promised, and sit
+outside the "test file" target.
+
+**Semantic Family E or F7 (mutation testing and the skill).** Mocking the unit under
+test, asserting the value you fed the mock, re-implementing the production formula,
+borrowing state from another test, an expected value that contradicts the spec: none of
+these can be proven by structure. `C14` (a snapshot generated from the code's own output)
+is the only codable corner of this family. The honest path for the rest is mutation
+testing (mutmut, cosmic-ray), which mutates the production code and checks whether any
+test goes red, plus the LLM semantic pass in
+[falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
 
 **How the scanner detects.** It parses each test file with Python's `ast` module and inspects the tree. It never imports or runs the test, so a malicious or broken test cannot execute through it. Detection is structural: an `assert` whose expression is a constant, both sides of a comparison AST-identical, a `pytest.raises` argument of `Exception`, a mock-named receiver with a no-parentheses `assert_called_once`, a `Test*` class with `__init__`, and so on. Precision is the priority for HIGH codes, because they block commits: each one is stress-tested against look-alikes (optional-dependency skips, abstract base test classes, `@patch`-injected mocks, exact-count `len(x) == N`) and stays quiet on them.
 
@@ -313,6 +353,7 @@ falsegreen/
   src/falsegreen/scanner.py        the deterministic scanner
   src/falsegreen/hook_install.py   raw git-hook installer
   docs/guide.md                    plain-language guide to every case
+  examples/python/                 a BAD + CLEAN sample for every detected code
   tests/test_scanner.py            the scanner's own tests
   .pre-commit-hooks.yaml           pre-commit integration
   pyproject.toml                   packaging

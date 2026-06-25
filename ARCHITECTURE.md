@@ -66,6 +66,31 @@ The scanner owns what the syntax tree can prove. Two kinds of smell sit outside 
 Precision over recall is the standing rule: a low-confidence code that misses a case is
 preferred to one that flags correct code. A false alarm trains people to ignore the tool.
 
+## Codes left out on purpose
+
+The static layer is close to saturated, so a few catalog codes are deliberately not
+implemented. They are recorded here, with the reason, so the boundary is explicit.
+
+- **High false-positive without deeper analysis.** `C40` (assert on a spec-less `Mock`
+  attribute, always truthy), `C41` (assert on an in-place method that returns `None`),
+  `C46` (real network or DB call with no double), and `C47` (assertion that depends on
+  dict or set ordering). Each looks identical to a valid pattern at the AST level: a
+  real object, a typed receiver, an integration test, a deterministic collection. The
+  parser cannot tell them apart, so these stay in the LLM semantic pass.
+- **Runtime and culture (the `PL` series).** Not a per-file property. `PL2`, `PL7`, and
+  `PL8` are covered by `--config-audit` (it reads the project's pytest and coverage
+  config). `PL1` (`python -O` stripping asserts), `PL4` (a collection error counted as
+  zero tests), and `PL3`, `PL5`, `PL6` need execution or pipeline inspection, so they are
+  documented rather than promised.
+- **Semantic Family E / F7.** Mocking the unit under test, echoing the value fed to a
+  mock, re-implementing the production formula, borrowing state, an expected value that
+  contradicts the spec. Structure cannot prove intent. `C14` is the only codable corner;
+  the rest are reached by mutation testing (mutmut, cosmic-ray) and the skill.
+
+`examples/python/` carries a BAD plus a CLEAN look-alike for every code the scanner does
+detect; the codes above have no example there because the scanner is not meant to flag
+them.
+
 ## Siblings
 
 Same idea, different language surface: [falsegreen-js](https://github.com/vinicq/falsegreen-js)
