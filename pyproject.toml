@@ -36,3 +36,8 @@ packages = ["src/falsegreen"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+# examples/ holds illustrative scan targets, not runnable code: they reference
+# helpers that do not exist on purpose, so linting them only reports noise.
+extend-exclude = ["examples"]

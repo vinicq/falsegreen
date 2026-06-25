@@ -6,6 +6,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `examples/python/`: a worked BAD plus CLEAN look-alike for every code the scanner
+  detects, grouped by the five families. `falsegreen examples/` flags the BAD samples and
+  leaves the CLEAN ones alone; the opt-in codes (C22, D1, D3, D4, D5, D6, M2) are shown via
+  `examples/enable-optin.toml`. The samples are scan targets, not a runnable suite, so a
+  conftest keeps pytest from collecting them.
+
+### Documentation
+- README and ARCHITECTURE now list the codes the scanner does not detect, with the reason:
+  C40, C41, C46, C47 (high false-positive without deeper analysis, left to the skill), the
+  PL runtime/culture series (PL1/PL3/PL4/PL5/PL6 are not a per-file property; PL2/PL7/PL8 are
+  already in `--config-audit`), and the Family E / F7 semantic codes (reached by mutation
+  testing and the LLM pass).
+
 ## [0.5.0] - 2026-06-23
 
 ### Added
