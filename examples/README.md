@@ -64,7 +64,7 @@ M2 = "info"
 
 ## Codes the scanner does not detect
 
-C40, C46, C47, C41, the PL runtime/culture series, and the Family E semantic
+C40, C41, C46, C47, the PL runtime/culture series, and the Family E semantic
 codes are deliberately not implemented in the static scanner. The reasons are in
 the main [README](../README.md#codes-the-scanner-does-not-detect) and
 [ARCHITECTURE.md](../ARCHITECTURE.md). They have no example here because the

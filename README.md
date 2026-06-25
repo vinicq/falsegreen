@@ -146,7 +146,9 @@ gap is honest, not hidden. The reasoning follows the consolidated catalog.
 - `C41` (assert on an in-place method that returns `None`, like `assert not lst.sort()`):
   whether it is trivially green depends on the receiver's type, which the parser cannot
   see. Restricted to known mutators it would still misfire on look-alikes, so it is left
-  to the semantic pass.
+  to the semantic pass. `C41` holds a catalog row and a fix hint (so it shows up in the
+  rule list and the JSON output), but no detector is wired to it: the scanner never
+  emits a `C41` finding.
 - `C46` (real network or database call with no double): legitimate at the integration
   level, where crossing the boundary is the point. Flagging it per file, without knowing
   the test's layer, is a high false-positive. It belongs to the skill and the project
