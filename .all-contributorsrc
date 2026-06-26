@@ -34,7 +34,9 @@
       "avatar_url": "https://avatars.githubusercontent.com/u/294912019?v=4",
       "profile": "https://github.com/homesellerq-coder",
       "contributions": [
-        "code"
+        "code",
+        "doc",
+        "infra"
       ]
     }
   ]
