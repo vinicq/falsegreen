@@ -292,6 +292,15 @@ MUTATING_METHODS = {
     "append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse",
     "update", "add", "discard", "setdefault",
 }
+# In-place mutator methods that return None on the built-in containers (C41).
+# An assertion on one of these is trivially green: the call mutates in place and
+# yields None, so `assert lst.sort()` / `assertIsNone(lst.sort())` verify the
+# None, not the resulting state. Kept STRICT to these names so value-returning
+# methods (pop, get, union, ...) never trip the detector.
+NONE_RETURNING_MUTATORS = {
+    "sort", "append", "extend", "reverse", "update", "add", "remove",
+    "insert", "clear",
+}
 TIMEOUT_KEYWORDS = {"timeout", "segment_timeout"}
 CONCURRENCY_TIMEOUT_CALLS = {
     "get", "join", "wait", "wait_for", "sleep", "result",
@@ -718,6 +727,48 @@ def assert_always_truthy_object(test):
     set, or dict comprehension is NOT included: those can be empty, so the
     assertion is a real (if weak) check."""
     return isinstance(test, (ast.GeneratorExp, ast.Lambda))
+
+
+def _is_none_returning_mutator_call(node):
+    """True if node is `receiver.<m>(...)` where <m> is a known in-place mutator
+    that returns None (sort/append/extend/reverse/update/add/remove/insert/clear).
+    The receiver must be a plain reference (name/attribute/subscript), not itself a
+    call: `something().sort()` is too speculative to flag."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return False
+    if node.func.attr not in NONE_RETURNING_MUTATORS:
+        return False
+    return isinstance(node.func.value, (ast.Name, ast.Attribute, ast.Subscript))
+
+
+def assert_none_mutator(test):
+    """The asserted expression is (trivially) the None return of an in-place
+    mutator, so the assertion can never fail meaningfully (C41). Covers:
+      assert lst.sort()              -> None is falsy, the assert always FAILS,
+                                        but the *intent* (check the sort) is lost
+      assert not lst.sort()          -> not None == True, always green
+      assert lst.append(x) is None   -> compares the None return to None, green
+      assert lst.clear() == None     -> same via ==
+    Returns True when the mutator call is the thing under (non-)check."""
+    # `assert lst.sort()` and `assert not lst.sort()`
+    if _is_none_returning_mutator_call(test):
+        return True
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not) \
+            and _is_none_returning_mutator_call(test.operand):
+        return True
+    # `assert lst.append(x) is None` / `== None` (either side)
+    if isinstance(test, ast.Compare) and len(test.ops) == 1 \
+            and isinstance(test.ops[0], (ast.Is, ast.Eq)):
+        left, right = test.left, test.comparators[0]
+        if _is_none_returning_mutator_call(left) and _is_none_literal(right):
+            return True
+        if _is_none_returning_mutator_call(right) and _is_none_literal(left):
+            return True
+    return False
+
+
+def _is_none_literal(node):
+    return isinstance(node, ast.Constant) and node.value is None
 
 
 def _int_const(node):
@@ -1697,6 +1748,10 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             elif assert_numeric_tautology(test):
                 findings.append(Finding(file, n.lineno, "C44",
                                         "len()/abs() is never negative — this comparison is always true"))
+            elif assert_none_mutator(test):
+                findings.append(Finding(file, n.lineno, "C41",
+                                        "an in-place mutator (sort/append/...) returns None — "
+                                        "assert the resulting state instead"))
             elif assert_self_compare(test) and not in_equality_semantics_test(func, test):
                 findings.append(Finding(file, n.lineno, "C7"))
             else:
@@ -1710,6 +1765,19 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                 hint = _suboptimal_assert_hint(test)
                 if hint:
                     findings.append(Finding(file, n.lineno, "C34", hint))
+
+    # C41 (unittest form): assertIsNone(lst.sort()) — the argument is the None
+    # return of an in-place mutator, so the assertion is trivially green. The
+    # `assert ...` forms are handled in the dispatch loop above; this catches the
+    # xunit-style call. assertIsNotNone(lst.sort()) would FAIL, so it is not a
+    # false-green and is left alone.
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Expr) and is_xunit_assert_call(n.value) \
+                and n.value.func.attr == "assertIsNone" and n.value.args \
+                and _is_none_returning_mutator_call(n.value.args[0]):
+            findings.append(Finding(file, n.lineno, "C41",
+                                    "an in-place mutator (sort/append/...) returns None — "
+                                    "assert the resulting state instead"))
 
     # C6b: assertion subscripts a mock call-args list by a computed/index-derived
     # position rather than by a stable name — the check breaks if the argument
