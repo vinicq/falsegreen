@@ -11,6 +11,9 @@ permissions:
 
 jobs:
   update_release_draft:
+    # Skip on PRs from forks: the draft-write step needs a token with write
+    # permission, which fork PRs do not get. Running it there only fails red.
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
     permissions:
       contents: write
       pull-requests: write
