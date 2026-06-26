@@ -2970,6 +2970,61 @@ def test_no_c45_for_populated_parametrize(tmp_path):
     """)
 
 
+def test_c41_assert_not_on_none_mutator(tmp_path):
+    # `lst.sort()` returns None; `not None` is True, so the assert is always green
+    # and the sort is never verified.
+    assert "C41" in scan_source(tmp_path, """
+        def test_sort():
+            lst = [3, 1, 2]
+            assert not lst.sort()
+    """)
+
+
+def test_c41_assert_bare_none_mutator(tmp_path):
+    assert "C41" in scan_source(tmp_path, """
+        def test_append():
+            lst = []
+            assert lst.append(1)
+    """)
+
+
+def test_c41_assert_mutator_is_none(tmp_path):
+    assert "C41" in scan_source(tmp_path, """
+        def test_append():
+            lst = []
+            assert lst.append(1) is None
+    """)
+
+
+def test_c41_assert_is_none_unittest_form(tmp_path):
+    assert "C41" in scan_source(tmp_path, """
+        import unittest
+        class T(unittest.TestCase):
+            def test_sort(self):
+                lst = [3, 1, 2]
+                self.assertIsNone(lst.sort())
+    """)
+
+
+def test_no_c41_for_value_returning_method(tmp_path):
+    # pop() returns the removed element — a real value-checking assertion, not a
+    # None-mutator false-green.
+    assert "C41" not in scan_source(tmp_path, """
+        def test_pop():
+            lst = [1, 2, 3]
+            assert lst.pop() == 3
+    """)
+
+
+def test_no_c41_for_pure_builtin_sorted(tmp_path):
+    # sorted() returns a new list; the equality is a genuine check.
+    assert "C41" not in scan_source(tmp_path, """
+        def test_sorted():
+            lst = [3, 1, 2]
+            assert sorted(lst) == [1, 2, 3]
+    """)
+
+
 # --- Codex review fixes (each fix gets a test) -------------------------------
 
 def test_no_c43_for_non_pytest_skip_method(tmp_path):
