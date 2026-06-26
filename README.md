@@ -15,6 +15,8 @@ The scanner is a zero-dependency AST pass. It validates each test against 34 act
 
 The checks are grounded in the rotten-green-test research (Soares 2023; Delplanque et al., ICSE 2019) and cross-walked against the published test-smell catalog. See [CREDITS.md](CREDITS.md).
 
+**The falsegreen family:** **falsegreen** (Python/pytest) · [falsegreen-js](https://github.com/vinicq/falsegreen-js) (JS/TS) · [robotframework-falsegreen](https://github.com/vinicq/robotframework-falsegreen) (Robot Framework) · [falsegreen-skill](https://github.com/vinicq/falsegreen-skill) (semantic LLM pass).
+
 > **Install:** `pip install falsegreen`. Pre-commit hook also available (see below). LLM semantic pass: [falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
 
 ---
