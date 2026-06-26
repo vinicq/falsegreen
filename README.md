@@ -241,6 +241,18 @@ The scanner is the fast, deterministic pre-filter. For TypeScript, JavaScript, J
 
 ---
 
+## What we don't flag (and why)
+
+Measured against the [Open Catalog of Test Smells](https://test-smell-catalog.readthedocs.io/) (517 documented smells), only the false-green slice is in scope. These stay out, on purpose:
+
+- **Brittleness / false-red** (a test that breaks without a real bug): sensitive equality, brittle or fragile assertions. The opposite axis; flagging it would punish correct code.
+- **Hygiene / maintainability**: assertion roulette, magic numbers, long or verbose tests. Linter territory (ruff), and a few are surfaced here as opt-in diagnostics (`D1`, `M2`).
+- **Slow, design, naming, duplication, runtime/culture**: none are about whether the test protects.
+
+The boundary is deliberate. Where a smell has a statically provable false-green form, that form is a code here: uncontrolled time or randomness is `C16`, a hard-coded path is `C23`, shared module state is `C24`, an assertion that may never run is `C21`. See [CREDITS.md](CREDITS.md) for the full cross-walk against the literature.
+
+---
+
 ## Install and use
 
 ### 1. CLI (pip)
