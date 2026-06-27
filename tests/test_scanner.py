@@ -2980,11 +2980,31 @@ def test_c41_assert_not_on_none_mutator(tmp_path):
     """)
 
 
-def test_c41_assert_bare_none_mutator(tmp_path):
-    assert "C41" in scan_source(tmp_path, """
+def test_c41_bare_none_mutator_is_red_not_c41(tmp_path):
+    # `lst.append(1)` returns None, so `assert lst.append(1)` is `assert None`,
+    # which FAILS (red). A failing assert is not a false-green — not C41.
+    assert "C41" not in scan_source(tmp_path, """
         def test_append():
             lst = []
             assert lst.append(1)
+    """)
+
+
+def test_c41_assert_not_on_dict_update(tmp_path):
+    # d.update({}) returns None; `assert d.update(...) is None` is always green.
+    assert "C41" in scan_source(tmp_path, """
+        def test_update():
+            d = {}
+            assert d.update({}) is None
+    """)
+
+
+def test_no_c41_for_custom_object_receiver(tmp_path):
+    # `registry` is a function arg with no local container evidence; its add()
+    # may return a value, so flagging would be a false positive — not C41.
+    assert "C41" not in scan_source(tmp_path, """
+        def test_register(registry):
+            assert registry.add("x") is None
     """)
 
 
