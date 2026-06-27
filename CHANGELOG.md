@@ -6,6 +6,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `C48` (dark patch): a test that forces a known test-mode flag into test mode and then
+  asserts is exercising the product's test-only branch (`if TESTING: ...`), not real
+  behaviour. Detection-only; v1 covers raw writes (`os.environ["TESTING"] = "1"`,
+  `settings.TESTING = True`, a `global`-declared `TESTING = True`). Config values and
+  product feature flags are not flagged, and `C48` suppresses the `C29` env-leak report on
+  the same line. New id, not `C46`/`C47`, which stay reserved for their cataloged concepts (#78).
+
+### Fixed
+- `C41` collects container evidence with `children_no_nesting`, so a list/dict/set literal
+  bound to the same name inside a nested helper no longer misclassifies a custom-object
+  receiver as a built-in container (#97).
+
 ## [0.6.0] - 2026-06-27
 
 ### Fixed

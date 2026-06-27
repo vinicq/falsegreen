@@ -3105,6 +3105,121 @@ def test_c41_when_container_binding_is_at_test_top_level(tmp_path):
     """)
 
 
+# --- C48: dark-patch (test flips a test-mode flag then asserts) --------------
+
+def test_c48_flags_env_test_mode_then_assert(tmp_path):
+    # The test forces TESTING=1 in os.environ, then asserts — it exercises the
+    # product's `if TESTING:` test-only branch, not the path a real user hits.
+    assert "C48" in scan_source(tmp_path, """
+        import os
+        def test_dark():
+            os.environ["TESTING"] = "1"
+            assert feature() == "ok"
+    """)
+
+
+def test_c48_flags_module_flag_then_assert(tmp_path):
+    # A settings/module flag named TESTING set to True, then asserted, is the same smell.
+    assert "C48" in scan_source(tmp_path, """
+        def test_dark():
+            settings.TESTING = True
+            assert run() == 1
+    """)
+
+
+def test_c48_flags_global_name_then_assert(tmp_path):
+    # A bare TESTING = True only mutates shared state when declared global; then it is C48.
+    assert "C48" in scan_source(tmp_path, """
+        def test_dark():
+            global TESTING
+            TESTING = True
+            assert run() == 1
+    """)
+
+
+def test_no_c48_for_config_value(tmp_path):
+    # DATABASE_URL is configuration, not a test-mode toggle — not C48 (still C29 leak).
+    codes = scan_source(tmp_path, """
+        import os
+        def test_cfg():
+            os.environ["DATABASE_URL"] = "sqlite://"
+            assert run() == 1
+    """)
+    assert "C48" not in codes
+
+
+def test_no_c48_for_feature_flag(tmp_path):
+    # A product feature flag is real behaviour under test, not a test-mode dark patch.
+    assert "C48" not in scan_source(tmp_path, """
+        def test_feature():
+            settings.FEATURE_X = True
+            assert run() == 1
+    """)
+
+
+def test_no_c48_for_non_test_mode_value(tmp_path):
+    # TEST_MODE set to "production" does not enable a test branch — not C48.
+    assert "C48" not in scan_source(tmp_path, """
+        import os
+        def test_prod():
+            os.environ["TEST_MODE"] = "production"
+            assert run() == 1
+    """)
+
+
+def test_no_c48_without_downstream_assertion(tmp_path):
+    # A flag write with no assertion after it is fixture/setup, not a dark-patch test.
+    assert "C48" not in scan_source(tmp_path, """
+        import os
+        def test_setup_only():
+            os.environ["TESTING"] = "1"
+            do_setup()
+    """)
+
+
+def test_no_c48_for_local_name_without_global(tmp_path):
+    # A bare TESTING = True with no `global` is a local variable — it changes no shared
+    # state, so the product never sees it; not a dark patch.
+    assert "C48" not in scan_source(tmp_path, """
+        def test_local():
+            TESTING = True
+            assert TESTING
+    """)
+
+
+def test_no_c48_for_self_attribute(tmp_path):
+    # self.TESTING mutates instance state of the test, not a module/product flag.
+    assert "C48" not in scan_source(tmp_path, """
+        class T:
+            def test_x(self):
+                self.TESTING = True
+                assert run() == 1
+    """)
+
+
+def test_c48_suppresses_c29_on_the_same_write(tmp_path):
+    # When C48 fires on an os.environ test-mode write, the more specific C48 owns the
+    # line: C29 (env-leak) is not also reported on it.
+    codes = scan_source(tmp_path, """
+        import os
+        def test_dark():
+            os.environ["TESTING"] = "1"
+            assert feature() == "ok"
+    """)
+    assert "C48" in codes and "C29" not in codes
+
+
+def test_c29_still_fires_on_non_test_mode_env_write(tmp_path):
+    # The C48 suppression is scoped to the C48 line: a plain env write (DATABASE_URL)
+    # that C48 does not flag still reports the C29 leak.
+    assert "C29" in scan_source(tmp_path, """
+        import os
+        def test_cfg():
+            os.environ["DATABASE_URL"] = "sqlite://"
+            assert run() == 1
+    """)
+
+
 # --- Codex review fixes (each fix gets a test) -------------------------------
 
 def test_no_c43_for_non_pytest_skip_method(tmp_path):
