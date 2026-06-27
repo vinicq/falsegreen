@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Tests
+- Precision-lock corpus (`tests/test_precision_corpus.py`): one legitimate look-alike per
+  HIGH code, asserting no HIGH code fires on it, so a blocking false positive cannot merge
+  silently. Pins the two historical false positives (C7 on a deliberate `__eq__` test, C4 on
+  a route handler named `test_*`) plus a clean case for every other HIGH code, with a guard
+  that fails if a new HIGH code lands without an entry (#88).
+
 ### Added
 - `C48` (dark patch): a test that forces a known test-mode flag into test mode and then
   asserts is exercising the product's test-only branch (`if TESTING: ...`), not real
