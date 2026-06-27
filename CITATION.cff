@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "falsegreen: find Python tests that pass green without protecting anything"
+authors:
+  - family-names: Queiroz
+    given-names: Vinicius
+version: 0.6.0
+date-released: "2026-06-27"
+license: MIT
+repository-code: "https://github.com/vinicq/falsegreen"
+url: "https://github.com/vinicq/falsegreen"
+keywords:
+  - test-smells
+  - false-green
+  - software-testing
+  - static-analysis
