@@ -135,6 +135,7 @@ Six more from the consolidated catalog:
 | `C43` | `pytest.skip()` after test logic — the checks below it never run | LOW |
 | `C44` | Numeric tautology (`len(x) >= 0`, `abs(x) >= 0`) — always true | HIGH |
 | `C45` | Empty `@pytest.mark.parametrize` list — the test is generated with zero cases | HIGH |
+| `C48` | Dark patch — the test forces a test-mode flag (`os.environ["TESTING"]`, `settings.TESTING`) then asserts, exercising the product's test-only branch | LOW |
 
 ### Codes the scanner does not detect
 

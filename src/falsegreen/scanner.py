@@ -112,6 +112,7 @@ CASES = {
     "C43": ("pytest.skip() called after test logic — the verification below it may never run", "low", "J1"),
     "C44": ("numeric tautology — len()/abs() compared so the result is always true", "high", "J2"),
     "C45": ("empty @pytest.mark.parametrize list — the test is generated with zero cases and never runs", "high", "J1"),
+    "C48": ("test flips a test-mode flag (env/module) then asserts — exercises the product's test-only branch, not real behaviour", "low", "J1"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
     # --- diagnostic group (readability / observability; default off) ----------
     "D1":  ("multiple assertions without messages (assertion roulette)", "off", "J4"),
@@ -188,6 +189,7 @@ FIX_HINTS = {
     "C43": "remove the mid-test skip, or move it to a decorator at the top",
     "C44": "compare against a meaningful bound, not an always-true one",
     "C45": "add at least one case to the parametrize list",
+    "C48": "assert the behaviour a real user hits; do not force the product's test-mode branch from the test",
     "CC":  "restore the commented-out assertion, or delete it",
     "D1":  "add an assertion message to each assert",
     "D3":  "remove the duplicate assertion",
@@ -312,6 +314,20 @@ CONCURRENCY_TIMEOUT_CALLS = {
 # pass on the Nth attempt and report green, masking a flaky SUT instead of
 # fixing the root cause.
 RETRY_MARKER_NAMES = {"flaky", "repeat", "retry", "rerun", "flake"}
+
+# C48 (dark-patch): a test that flips a known test-mode toggle to a test-mode value
+# and then asserts is exercising the product's test-only branch (`if TESTING: ...`),
+# not the behaviour a user actually hits. v1 detects RAW writes only.
+# Env-var keys (os.environ["<KEY>"] = <truthy>) whose name unambiguously means
+# "we are under test". Config/feature-flag names (DATABASE_URL, FEATURE_X) are out.
+ENV_TEST_MODE_KEYS = {
+    "TESTING", "TEST", "TEST_MODE", "TESTMODE", "UNDER_TEST", "PYTEST_RUNNING",
+    "IS_TEST", "RUNNING_TESTS", "DJANGO_TEST", "_TEST", "PYTEST_CURRENT_TEST",
+}
+# Module/settings flag names (TESTING = True with `global`, or settings.TESTING = True).
+MODULE_TEST_MODE_RE = re.compile(r"^(TESTING|TEST_MODE|IS_TEST|UNDER_TEST|_TESTING)$")
+# Values that put the flag into test mode. bool is checked before int (bool subclasses int).
+TEST_MODE_TRUE_STRINGS = {"1", "true", "test", "yes", "on"}
 
 IGNORED_DIRS = {
     ".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules",
@@ -1349,33 +1365,92 @@ class Finding:
         }
 
 
-def has_assertion(func):
+def _iter_assertion_nodes(func):
+    """Yield nodes in func's body (no nested scopes) that act as assertions:
+    bare assert, fluent .should, xunit/mock/pytest assert calls, pytest.raises/fail,
+    and pytest.raises/xunit-raises used as a `with` context."""
     for n in children_no_nesting(func):
         if isinstance(n, ast.Assert):
-            return True
+            yield n
         # sure: result.should.equal(y) — .should is the fluent assertion entry point
-        if isinstance(n, ast.Attribute) and n.attr == "should":
-            return True
-        if isinstance(n, ast.Call):
+        elif isinstance(n, ast.Attribute) and n.attr == "should":
+            yield n
+        elif isinstance(n, ast.Call):
             target = dotted_name(n.func)
-            if target.endswith("pytest.raises") or target.endswith("raises"):
-                return True
-            if target.endswith("pytest.fail") or target.endswith("fail"):
-                return True
             last = target.split(".")[-1]
-            if last in MOCK_ASSERTS_VALID or last.startswith("assert"):
-                return True
-            if is_xunit_assert_call(n):
-                return True
-            # expects / ward: expect(x).to(equal(y))
-            if last in FLUENT_ASSERT_CALLS:
-                return True
-        if isinstance(n, ast.With):
+            if target.endswith("pytest.raises") or target.endswith("raises") \
+                    or target.endswith("pytest.fail") or target.endswith("fail") \
+                    or last in MOCK_ASSERTS_VALID or last.startswith("assert") \
+                    or is_xunit_assert_call(n) \
+                    or last in FLUENT_ASSERT_CALLS:  # expects / ward: expect(x).to(equal(y))
+                yield n
+        elif isinstance(n, ast.With):
             for item in n.items:
                 if is_call_to(item.context_expr, "pytest.raises", "raises") \
                         or is_xunit_raises_call(item.context_expr):
-                    return True
+                    yield n
+                    break
+
+
+def has_assertion(func):
+    return any(True for _ in _iter_assertion_nodes(func))
+
+
+def _is_test_mode_true(node):
+    """A constant value that puts a test-mode flag into test mode: True, 1, or one of
+    the closed string forms ('1'/'true'/'test'/'yes'/'on'). 'production', 2, 'staging',
+    a non-constant expression — none of these match, so a config write is not flagged."""
+    if not isinstance(node, ast.Constant):
+        return False
+    val = node.value
+    if isinstance(val, bool):          # bool first: bool is a subclass of int
+        return val is True
+    if isinstance(val, int):
+        return val == 1
+    if isinstance(val, str):
+        return val.strip().lower() in TEST_MODE_TRUE_STRINGS
     return False
+
+
+def _subscript_str_key(sub):
+    """The literal string key of a subscript target, or None. Handles py3.8 ast.Index."""
+    s = sub.slice
+    if s.__class__.__name__ == "Index":  # py3.8 wraps the key in ast.Index
+        s = s.value
+    if isinstance(s, ast.Constant) and isinstance(s.value, str):
+        return s.value
+    return None
+
+
+def _c48_toggle_writes(func):
+    """Raw writes, in this test body, that flip a known test-mode toggle to test mode:
+    os.environ["TESTING"] = <truthy>, settings.TESTING = <truthy> (not self/cls), or a
+    bare TESTING = <truthy> that is declared `global` in the function (otherwise the
+    name is a local and changes no shared state). v1 covers raw writes only; the
+    monkeypatch.setenv form stays with C29's 'use monkeypatch' guidance."""
+    global_names = set()
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Global):
+            global_names.update(n.names)
+    writes = []
+    for n in children_no_nesting(func):
+        if not (isinstance(n, ast.Assign) and _is_test_mode_true(n.value)):
+            continue
+        for tgt in n.targets:
+            if isinstance(tgt, ast.Subscript) \
+                    and dotted_name(tgt.value) == "os.environ" \
+                    and _subscript_str_key(tgt) in ENV_TEST_MODE_KEYS:
+                writes.append(n)
+                break
+            if isinstance(tgt, ast.Attribute) and MODULE_TEST_MODE_RE.match(tgt.attr) \
+                    and root_name(tgt.value) not in ("self", "cls"):
+                writes.append(n)
+                break
+            if isinstance(tgt, ast.Name) and tgt.id in global_names \
+                    and MODULE_TEST_MODE_RE.match(tgt.id):
+                writes.append(n)
+                break
+    return writes
 
 
 def empty_body(func):
@@ -2060,14 +2135,29 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
         findings.append(Finding(file, n.lineno, "C28",
                                 "'%s' declared but never read" % excinfo_name))
 
+    # C48: dark-patch — the test flips a known test-mode toggle (env var or a
+    # module/settings flag) to a test-mode value and then asserts, so it exercises
+    # the product's test-only branch instead of real behaviour. Detection-only;
+    # v1 covers RAW writes (os.environ[...]= / settings.TESTING= / global TESTING=).
+    c48_lines = set()
+    _assert_lines = [n.lineno for n in _iter_assertion_nodes(func)]
+    if _assert_lines:
+        for w in _c48_toggle_writes(func):
+            if any(al > w.lineno for al in _assert_lines):
+                findings.append(Finding(file, w.lineno, "C48",
+                                        "test sets a test-mode flag then asserts — drive real behaviour, not the test-only branch"))
+                c48_lines.add(w.lineno)
+
     # C29: direct os.environ assignment in a test — the mutation outlives the test
     # and contaminates every test that runs after. Use monkeypatch.setenv() which
-    # saves and restores the original value automatically.
+    # saves and restores the original value automatically. When C48 already fired on
+    # the same write, that more specific finding owns the line (no double report).
     for n in children_no_nesting(func):
         if isinstance(n, ast.Assign):
             for tgt in n.targets:
                 if isinstance(tgt, ast.Subscript) \
-                        and dotted_name(tgt.value) in ("os.environ",):
+                        and dotted_name(tgt.value) in ("os.environ",) \
+                        and n.lineno not in c48_lines:
                     findings.append(Finding(file, n.lineno, "C29",
                                             "use monkeypatch.setenv() to auto-restore"))
         elif isinstance(n, ast.Call):
