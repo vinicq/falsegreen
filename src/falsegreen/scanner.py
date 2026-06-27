@@ -746,9 +746,13 @@ def builtin_container_names(func, before_lineno=None):
 
     When `before_lineno` is given, only bindings that appear strictly before that
     line count: a container literal assigned AFTER the assertion does not prove the
-    receiver was a container at the point the assertion runs, so it must not flag."""
+    receiver was a container at the point the assertion runs, so it must not flag.
+
+    Bindings inside nested scopes (a helper def/lambda/class in the test body) are
+    not the test's local `name`, so they are not evidence about the asserted
+    receiver: walk children only, skipping nested scopes."""
     names = set()
-    for n in ast.walk(func):
+    for n in children_no_nesting(func):
         if before_lineno is not None and getattr(n, "lineno", 0) >= before_lineno:
             continue
         if isinstance(n, ast.Assign) and _is_builtin_container_literal(n.value):

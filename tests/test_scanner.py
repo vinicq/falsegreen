@@ -3080,6 +3080,31 @@ def test_no_c41_unittest_form_when_binding_is_after_assert(tmp_path):
     """)
 
 
+def test_no_c41_when_container_binding_is_in_a_nested_scope(tmp_path):
+    # Codex round-2 (second half) on #80: container evidence must not be collected
+    # from nested scopes. Here the asserted receiver is a custom-object parameter,
+    # and a NESTED helper binds the same name to a list literal. That binding is the
+    # helper's local, not the test's — it does not prove the receiver is a container.
+    assert "C41" not in scan_source(tmp_path, """
+        def test_register(registry):
+            def helper():
+                registry = []
+                return registry
+            assert registry.add("x") is None
+    """)
+
+
+def test_c41_when_container_binding_is_at_test_top_level(tmp_path):
+    # Guard for the same fix: a literal binding in the test body itself (even inside
+    # a non-def block) is still local evidence, so the None-mutator assert still fires.
+    assert "C41" in scan_source(tmp_path, """
+        def test_top_level():
+            if True:
+                lst = [3, 1, 2]
+            assert lst.sort() is None
+    """)
+
+
 # --- Codex review fixes (each fix gets a test) -------------------------------
 
 def test_no_c43_for_non_pytest_skip_method(tmp_path):
