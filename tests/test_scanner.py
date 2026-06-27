@@ -3045,6 +3045,41 @@ def test_no_c41_for_pure_builtin_sorted(tmp_path):
     """)
 
 
+def test_no_c41_when_container_binding_is_after_the_assert(tmp_path):
+    # Codex round-2 on #80: container evidence must precede the assertion. Here the
+    # receiver is only bound to a list literal AFTER the assert, so at the point the
+    # assertion runs `obj` is unknown (its method could return a value) — not C41.
+    assert "C41" not in scan_source(tmp_path, """
+        def test_later_binding():
+            obj = make_thing()
+            assert not obj.sort()
+            obj = []
+    """)
+
+
+def test_c41_when_container_binding_precedes_the_assert(tmp_path):
+    # Guard for the same fix: a binding BEFORE the assert still proves the container,
+    # so the None-mutator assertion is still flagged.
+    assert "C41" in scan_source(tmp_path, """
+        def test_earlier_binding():
+            obj = []
+            assert not obj.sort()
+            obj = []
+    """)
+
+
+def test_no_c41_unittest_form_when_binding_is_after_assert(tmp_path):
+    # Same precedence rule for the assertIsNone(...) xunit form.
+    assert "C41" not in scan_source(tmp_path, """
+        import unittest
+        class T(unittest.TestCase):
+            def test_sort(self):
+                obj = make_thing()
+                self.assertIsNone(obj.sort())
+                obj = []
+    """)
+
+
 # --- Codex review fixes (each fix gets a test) -------------------------------
 
 def test_no_c43_for_non_pytest_skip_method(tmp_path):
