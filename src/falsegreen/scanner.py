@@ -293,10 +293,12 @@ MUTATING_METHODS = {
     "update", "add", "discard", "setdefault",
 }
 # In-place mutator methods that return None on the built-in containers (C41).
-# An assertion on one of these is trivially green: the call mutates in place and
-# yields None, so `assert lst.sort()` / `assertIsNone(lst.sort())` verify the
-# None, not the resulting state. Kept STRICT to these names so value-returning
-# methods (pop, get, union, ...) never trip the detector.
+# An assertion that the call's None return is None is trivially green: the call
+# mutates in place and yields None, so `assert not lst.sort()` /
+# `assertIsNone(lst.sort())` verify the None, not the resulting state. Kept STRICT
+# to these names so value-returning methods (pop, get, union, ...) never trip the
+# detector, and the receiver must be a provably built-in container (see
+# builtin_container_names) so a custom object's same-named method is not flagged.
 NONE_RETURNING_MUTATORS = {
     "sort", "append", "extend", "reverse", "update", "add", "remove",
     "insert", "clear",
@@ -729,40 +731,76 @@ def assert_always_truthy_object(test):
     return isinstance(test, (ast.GeneratorExp, ast.Lambda))
 
 
-def _is_none_returning_mutator_call(node):
+def _is_builtin_container_literal(node):
+    """True if node is a list/dict/set literal or a list/dict/set comprehension.
+    These establish the value as a built-in container by direct local evidence."""
+    return isinstance(node, (ast.List, ast.Dict, ast.Set,
+                             ast.ListComp, ast.DictComp, ast.SetComp))
+
+
+def builtin_container_names(func):
+    """Names bound, somewhere in this function body, to a list/dict/set literal or
+    comprehension. Used by C41 to prove a mutator receiver is a built-in container
+    by LOCAL evidence; a name with no such binding is treated as unknown (and not
+    flagged), since a custom object's add/update/clear may return a value."""
+    names = set()
+    for n in ast.walk(func):
+        if isinstance(n, ast.Assign) and _is_builtin_container_literal(n.value):
+            for tgt in n.targets:
+                if isinstance(tgt, ast.Name):
+                    names.add(tgt.id)
+        elif isinstance(n, ast.AnnAssign) and n.value is not None \
+                and _is_builtin_container_literal(n.value) \
+                and isinstance(n.target, ast.Name):
+            names.add(n.target.id)
+    return names
+
+
+def _receiver_is_builtin_container(receiver, container_names):
+    """The mutator receiver is provably a built-in container by local evidence:
+    either a literal container directly, or a plain name bound to one earlier in
+    the same function body. Anything else (an arg, an attribute, a subscript, a
+    name with no local binding) is unknown and must not be flagged."""
+    if _is_builtin_container_literal(receiver):
+        return True
+    if isinstance(receiver, ast.Name):
+        return receiver.id in container_names
+    return False
+
+
+def _is_none_returning_mutator_call(node, container_names):
     """True if node is `receiver.<m>(...)` where <m> is a known in-place mutator
-    that returns None (sort/append/extend/reverse/update/add/remove/insert/clear).
-    The receiver must be a plain reference (name/attribute/subscript), not itself a
-    call: `something().sort()` is too speculative to flag."""
+    that returns None (sort/append/extend/reverse/update/add/remove/insert/clear)
+    AND the receiver is a provably built-in container by local evidence. A custom
+    object that happens to define one of these names (e.g. a registry whose add()
+    returns a value) is NOT flagged."""
     if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
         return False
     if node.func.attr not in NONE_RETURNING_MUTATORS:
         return False
-    return isinstance(node.func.value, (ast.Name, ast.Attribute, ast.Subscript))
+    return _receiver_is_builtin_container(node.func.value, container_names)
 
 
-def assert_none_mutator(test):
+def assert_none_mutator(test, container_names):
     """The asserted expression is (trivially) the None return of an in-place
-    mutator, so the assertion can never fail meaningfully (C41). Covers:
-      assert lst.sort()              -> None is falsy, the assert always FAILS,
-                                        but the *intent* (check the sort) is lost
+    mutator on a built-in container, so the assertion is always green (C41). The
+    bare `assert lst.sort()` form is excluded: `assert None` FAILS (red), so it is
+    not a false-green. Covers only the actually-green forms:
       assert not lst.sort()          -> not None == True, always green
       assert lst.append(x) is None   -> compares the None return to None, green
       assert lst.clear() == None     -> same via ==
     Returns True when the mutator call is the thing under (non-)check."""
-    # `assert lst.sort()` and `assert not lst.sort()`
-    if _is_none_returning_mutator_call(test):
-        return True
+    # `assert not lst.sort()`
     if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not) \
-            and _is_none_returning_mutator_call(test.operand):
+            and _is_none_returning_mutator_call(test.operand, container_names):
         return True
     # `assert lst.append(x) is None` / `== None` (either side)
     if isinstance(test, ast.Compare) and len(test.ops) == 1 \
             and isinstance(test.ops[0], (ast.Is, ast.Eq)):
         left, right = test.left, test.comparators[0]
-        if _is_none_returning_mutator_call(left) and _is_none_literal(right):
+        if _is_none_returning_mutator_call(left, container_names) and _is_none_literal(right):
             return True
-        if _is_none_returning_mutator_call(right) and _is_none_literal(left):
+        if _is_none_returning_mutator_call(right, container_names) and _is_none_literal(left):
             return True
     return False
 
@@ -1737,6 +1775,7 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                 findings.append(Finding(file, n.lineno, "C4",
                                         "nested test function is not collected"))
 
+    container_names = builtin_container_names(func)
     for n in children_no_nesting(func):
         if isinstance(n, ast.Assert):
             test = n.test
@@ -1748,7 +1787,7 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             elif assert_numeric_tautology(test):
                 findings.append(Finding(file, n.lineno, "C44",
                                         "len()/abs() is never negative — this comparison is always true"))
-            elif assert_none_mutator(test):
+            elif assert_none_mutator(test, container_names):
                 findings.append(Finding(file, n.lineno, "C41",
                                         "an in-place mutator (sort/append/...) returns None — "
                                         "assert the resulting state instead"))
@@ -1774,7 +1813,7 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
     for n in children_no_nesting(func):
         if isinstance(n, ast.Expr) and is_xunit_assert_call(n.value) \
                 and n.value.func.attr == "assertIsNone" and n.value.args \
-                and _is_none_returning_mutator_call(n.value.args[0]):
+                and _is_none_returning_mutator_call(n.value.args[0], container_names):
             findings.append(Finding(file, n.lineno, "C41",
                                     "an in-place mutator (sort/append/...) returns None — "
                                     "assert the resulting state instead"))
