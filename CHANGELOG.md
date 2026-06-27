@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-27
+
+### Fixed
+- C41 counts container evidence only before the assertion, so a list/dict/set literal bound to the receiver after the assert no longer misclassifies it (#83).
+- codex-review-gate reruns on pull_request_review_thread resolve and paginates reviewThreads before counting blockers; the opt-in demo keeps the CLEAN look-alike examples clean (#81).
+
+
 ### Added
 - `examples/python/`: a worked BAD plus CLEAN look-alike for every code the scanner
   detects, grouped by the five families. `falsegreen examples/` flags the BAD samples and
