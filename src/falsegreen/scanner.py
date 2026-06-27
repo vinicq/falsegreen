@@ -738,13 +738,19 @@ def _is_builtin_container_literal(node):
                              ast.ListComp, ast.DictComp, ast.SetComp))
 
 
-def builtin_container_names(func):
-    """Names bound, somewhere in this function body, to a list/dict/set literal or
+def builtin_container_names(func, before_lineno=None):
+    """Names bound, in this function body, to a list/dict/set literal or
     comprehension. Used by C41 to prove a mutator receiver is a built-in container
     by LOCAL evidence; a name with no such binding is treated as unknown (and not
-    flagged), since a custom object's add/update/clear may return a value."""
+    flagged), since a custom object's add/update/clear may return a value.
+
+    When `before_lineno` is given, only bindings that appear strictly before that
+    line count: a container literal assigned AFTER the assertion does not prove the
+    receiver was a container at the point the assertion runs, so it must not flag."""
     names = set()
     for n in ast.walk(func):
+        if before_lineno is not None and getattr(n, "lineno", 0) >= before_lineno:
+            continue
         if isinstance(n, ast.Assign) and _is_builtin_container_literal(n.value):
             for tgt in n.targets:
                 if isinstance(tgt, ast.Name):
@@ -1775,7 +1781,6 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                 findings.append(Finding(file, n.lineno, "C4",
                                         "nested test function is not collected"))
 
-    container_names = builtin_container_names(func)
     for n in children_no_nesting(func):
         if isinstance(n, ast.Assert):
             test = n.test
@@ -1787,7 +1792,7 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             elif assert_numeric_tautology(test):
                 findings.append(Finding(file, n.lineno, "C44",
                                         "len()/abs() is never negative — this comparison is always true"))
-            elif assert_none_mutator(test, container_names):
+            elif assert_none_mutator(test, builtin_container_names(func, n.lineno)):
                 findings.append(Finding(file, n.lineno, "C41",
                                         "an in-place mutator (sort/append/...) returns None — "
                                         "assert the resulting state instead"))
@@ -1813,7 +1818,8 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
     for n in children_no_nesting(func):
         if isinstance(n, ast.Expr) and is_xunit_assert_call(n.value) \
                 and n.value.func.attr == "assertIsNone" and n.value.args \
-                and _is_none_returning_mutator_call(n.value.args[0], container_names):
+                and _is_none_returning_mutator_call(n.value.args[0],
+                                                    builtin_container_names(func, n.lineno)):
             findings.append(Finding(file, n.lineno, "C41",
                                     "an in-place mutator (sort/append/...) returns None — "
                                     "assert the resulting state instead"))
