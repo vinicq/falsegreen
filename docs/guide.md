@@ -532,7 +532,7 @@ accountable, never to copy what it already does.
 
 # Additional patterns: beyond the eighteen cases
 
-The eighteen cases above cover the core families. The patterns below are extensions — tighter or more specific versions of the same traps — that falsegreen checks for separately because they appear often enough in real test suites to warrant their own code.
+The eighteen cases above cover the core families. The patterns below are extensions - tighter or more specific versions of the same traps - that falsegreen checks for separately because they appear often enough in real test suites to warrant their own code.
 
 ## CC. The commented-out assert
 
@@ -543,7 +543,7 @@ An `assert` that was disabled by commenting it out. The test still runs and stil
 assert response is not None  # only this runs
 ```
 
-Fix it or delete the comment. A commented-out assertion is a decision to stop checking something — make that decision explicitly.
+Fix it or delete the comment. A commented-out assertion is a decision to stop checking something - make that decision explicitly.
 
 ## Sensitive equality (C18)
 
@@ -607,7 +607,7 @@ Use `tmp_path` (pytest fixture) for temporary files, or store fixtures in the te
 
 ## xfail without strict (C25)
 
-`@pytest.mark.xfail` marks a test as expected to fail. Without `strict=True`, when the test unexpectedly passes (XPASS), pytest treats it as a success and moves on. The bug was fixed, but the test is never promoted back to a normal test — it just silently goes from "expected to fail" to "passes by exception".
+`@pytest.mark.xfail` marks a test as expected to fail. Without `strict=True`, when the test unexpectedly passes (XPASS), pytest treats it as a success and moves on. The bug was fixed, but the test is never promoted back to a normal test - it just silently goes from "expected to fail" to "passes by exception".
 
 Add `strict=True` or set `xfail_strict = true` in `[tool.pytest.ini_options]`. An XPASS then becomes a test failure, which forces you to remove the marker.
 
@@ -658,7 +658,7 @@ Use `monkeypatch.setenv()`, which restores the original value automatically when
 
 ## capsys result never asserted (C31)
 
-`capsys.readouterr()` is called but its return value is never asserted. The test captures stdout/stderr, but nothing verifies the content. The capture has no effect on pass/fail — the test passes whether the output is correct or empty.
+`capsys.readouterr()` is called but its return value is never asserted. The test captures stdout/stderr, but nothing verifies the content. The capture has no effect on pass/fail - the test passes whether the output is correct or empty.
 
 ```python
 # Lying: captured is assigned but never checked
@@ -684,7 +684,7 @@ Always add `reason="<why>"`. If there is no good reason, remove the skip.
 
 ## ML metric computed but not asserted (C33)
 
-Calling `model.score()`, `accuracy_score()`, `f1_score()`, or any other sklearn metric function without asserting on the return value. The test passes regardless of actual model performance — a model with 10% accuracy is treated the same as one with 95%.
+Calling `model.score()`, `accuracy_score()`, `f1_score()`, or any other sklearn metric function without asserting on the return value. The test passes regardless of actual model performance - a model with 10% accuracy is treated the same as one with 95%.
 
 ```python
 # Lying: score is computed and discarded

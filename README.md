@@ -8,11 +8,11 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://vinicq.github.io/falsegreen-docs/)
 
-**One problem, one tool: the false positive.** falsegreen finds Python/pytest tests that pass green without protecting anything — tests that let broken code through because the assertion is empty, always true, never runs, or checks the wrong thing.
+**One problem, one tool: the false positive.** falsegreen finds Python/pytest tests that pass green without protecting anything - tests that let broken code through because the assertion is empty, always true, never runs, or checks the wrong thing.
 
 A test that tells you a broken program is safe is worse than no test at all. AI coding assistants produce these at scale. The tool catches them before they merge.
 
-The scanner is a zero-dependency AST pass. It validates each test against 34 active false-positive codes — patterns a parser can prove: an assertion that never runs, a check that is empty or always true, a swallowed exception, a mock assertion with a typo, a check stranded in dead code. HIGH findings block the commit; LOW ones warn. A third group (diagnostic and coupling, seven codes) can be enabled per project for informational checks that do not affect the exit code. The semantic layer — intent-based patterns no static tool can see — lives in [falsegreen-skill](https://github.com/vinicq/falsegreen-skill), the LLM companion covering Python and other languages.
+The scanner is a zero-dependency AST pass. It validates each test against 44 active false-positive codes, patterns a parser can prove: an assertion that never runs, a check that is empty or always true, a swallowed exception, a mock assertion with a typo, a check stranded in dead code. HIGH findings block the commit; LOW ones warn. A third group (diagnostic and coupling, six codes) can be enabled per project for informational checks that do not affect the exit code. The semantic layer, intent-based patterns no static tool can see, lives in [falsegreen-skill](https://github.com/vinicq/falsegreen-skill), the LLM companion covering Python and other languages.
 
 The checks are grounded in the rotten-green-test research (Soares 2023; Delplanque et al., ICSE 2019) and cross-walked against the published test-smell catalog. See [CREDITS.md](CREDITS.md).
 
@@ -43,7 +43,7 @@ The checks are grounded in the rotten-green-test research (Soares 2023; Delplanq
 
 ## Why this exists
 
-Coverage tells you which lines ran. It does not tell you whether anything was checked. A suite can report 90% coverage while most of those tests assert nothing real — the green bar is a comfort, not a guarantee.
+Coverage tells you which lines ran. It does not tell you whether anything was checked. A suite can report 90% coverage while most of those tests assert nothing real - the green bar is a comfort, not a guarantee.
 
 The danger is not a test that fails. It is a test that passes when it should not.
 
@@ -73,7 +73,7 @@ The plain-language guide, with a real-world analogy and before/after for each ca
 
 ## What it detects
 
-The scanner ships 40 active false-positive codes across the five families, plus `CC` (commented-out assert). HIGH findings block a commit; LOW ones warn. Cases that require reading production intent (10, 11, 12, 15, 18) need the semantic layer.
+The scanner ships 44 active false-positive codes across the five families, plus `CC` (commented-out assert). HIGH findings block a commit; LOW ones warn. Cases that require reading production intent (10, 11, 12, 15, 18) need the semantic layer.
 
 | # | Case | Why it fools you | Code | Conf |
 |---|---|---|---|---|
@@ -125,12 +125,16 @@ Eleven additional codes covering the most common patterns in real test suites:
 | `C37` | Duplicate case in `@pytest.mark.parametrize` — same argument set runs twice | LOW |
 | `CC` | Commented-out assert | LOW |
 
-Six more from the consolidated catalog:
+Ten more from the consolidated catalog:
 
 | Code | Pattern | Conf |
 |---|---|---|
+| `C6b` | Assertion coupled to positional argument layout — breaks on a benign reorder, not a bug | LOW |
+| `C11a` | Self-confirming literal — the expected value is assigned by the test itself | LOW |
+| `C24` | Module-global mutable state shared across tests — borrowed state, not isolation | LOW |
 | `C38` | Two test functions share a name — the later one silently overrides the first | HIGH |
 | `C39` | Test `return`s a comparison instead of asserting it — pytest ignores the value | HIGH |
+| `C41` | Assertion on an in-place method that returns `None` (`assert not lst.sort()`) — trivially satisfied | LOW |
 | `C42` | `assert` on a generator expression or lambda — the object is always truthy | HIGH |
 | `C43` | `pytest.skip()` after test logic — the checks below it never run | LOW |
 | `C44` | Numeric tautology (`len(x) >= 0`, `abs(x) >= 0`) — always true | HIGH |
@@ -149,12 +153,6 @@ gap is honest, not hidden. The reasoning follows the consolidated catalog.
 - `C40` (assert on a `Mock` attribute with no spec, always truthy): without spec or
   autospec analysis the false-positive rate is high, since the same shape is a valid
   check on a real object. The concept lives in the skill (Family F7).
-- `C41` (assert on an in-place method that returns `None`, like `assert not lst.sort()`):
-  whether it is trivially green depends on the receiver's type, which the parser cannot
-  see. Restricted to known mutators it would still misfire on look-alikes, so it is left
-  to the semantic pass. `C41` holds a catalog row and a fix hint (so it shows up in the
-  rule list and the JSON output), but no detector is wired to it: the scanner never
-  emits a `C41` finding.
 - `C46` (real network or database call with no double): legitimate at the integration
   level, where crossing the boundary is the point. Flagging it per file, without knowing
   the test's layer, is a high false-positive. It belongs to the skill and the project
@@ -184,7 +182,7 @@ test goes red, plus the LLM semantic pass in
 
 **How the scanner detects.** It parses each test file with Python's `ast` module and inspects the tree. It never imports or runs the test, so a malicious or broken test cannot execute through it. Detection is structural: an `assert` whose expression is a constant, both sides of a comparison AST-identical, a `pytest.raises` argument of `Exception`, a mock-named receiver with a no-parentheses `assert_called_once`, a `Test*` class with `__init__`, and so on. Precision is the priority for HIGH codes, because they block commits: each one is stress-tested against look-alikes (optional-dependency skips, abstract base test classes, `@patch`-injected mocks, exact-count `len(x) == N`) and stays quiet on them.
 
-**How the semantic pass detects.** Cases 10, 11, 12, 15, and 18 cannot be proven by structure. A parser sees a mock but cannot tell whether it replaced an edge (network, disk, clock) or the thing under test. It sees an arithmetic expression but cannot tell whether the expected value was derived independently or copied from the code. That judgment requires reading the production code against an independent oracle — that is what [falsegreen-skill](https://github.com/vinicq/falsegreen-skill) does.
+**How the semantic pass detects.** Cases 10, 11, 12, 15, and 18 cannot be proven by structure. A parser sees a mock but cannot tell whether it replaced an edge (network, disk, clock) or the thing under test. It sees an arithmetic expression but cannot tell whether the expected value was derived independently or copied from the code. That judgment requires reading the production code against an independent oracle - that is what [falsegreen-skill](https://github.com/vinicq/falsegreen-skill) does.
 
 **Why two confidence levels.** A blocking gate that cries wolf gets disabled. So only near-certain, mechanically unambiguous patterns are HIGH (they block). The rest are LOW (they warn) and are starting points for human or semantic judgment, not verdicts.
 
@@ -192,7 +190,7 @@ test goes red, plus the LLM semantic pass in
 
 A tool that flags tests for not protecting anything has to show it protects something itself.
 
-- **The scanner (deterministic).** Every rule ships with two tests: one proving it fires on the bad pattern, one proving it stays quiet on a legitimate look-alike. The scanner also runs on its own source on every commit (the self-scan), because the false-positive detector is not allowed to contain one. It is also validated against real-world Python projects — the most recent corpus run covered 40 projects with over 58,000 test functions. That pass surfaced false positives in two rule classes (C7 on deliberate `__eq__` tests, C4 on test-named route handlers). Both were fixed, each with regression tests. The HIGH count across all 40 projects after fixes: 0. Each false positive is recorded in the commit history and the CHANGELOG.
+- **The scanner (deterministic).** Every rule ships with two tests: one proving it fires on the bad pattern, one proving it stays quiet on a legitimate look-alike. The scanner also runs on its own source on every commit (the self-scan), because the false-positive detector is not allowed to contain one. It is also validated against real-world Python projects - the most recent corpus run covered 40 projects with over 58,000 test functions. That pass surfaced false positives in two rule classes (C7 on deliberate `__eq__` tests, C4 on test-named route handlers). Both were fixed, each with regression tests. The HIGH count across all 40 projects after fixes: 0. Each false positive is recorded in the commit history and the CHANGELOG.
 - **The semantic pass (LLM).** Validation for the LLM-based semantic layer is tracked in [falsegreen-skill](https://github.com/vinicq/falsegreen-skill), where benchmark corpora for Python and TypeScript are maintained with precision/recall measurements.
 
 ---
@@ -236,7 +234,7 @@ Seven additional codes surface smells that do not create false positives but hur
 
 | Layer | What it is | When it runs | Catches |
 |---|---|---|---|
-| **Scanner** (this repo) | Zero-dependency AST analysis | CLI, CI, pre-commit | 34 active false-positive codes + 7 opt-in diagnostic codes |
+| **Scanner** (this repo) | Zero-dependency AST analysis | CLI, CI, pre-commit | 44 active false-positive codes + 6 opt-in diagnostic and coupling codes |
 | **Semantic pass** ([falsegreen-skill](https://github.com/vinicq/falsegreen-skill)) | LLM-based analysis, Python and other languages | on demand | bug-freezing patterns no static tool can see (cases 10/11/12/15/18) |
 
 The scanner is the fast, deterministic pre-filter. For TypeScript, JavaScript, Java, and other languages, use [falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
@@ -351,16 +349,16 @@ falsegreen --write-baseline tests/   # writes .falsegreen-baseline.json, exits 0
 falsegreen --baseline tests/         # suppresses recorded findings, fails on new
 ```
 
-A finding is fingerprinted by relative path, code, detail, and normalized source line — not line number, so prepending code does not re-trigger a baselined finding. Commit `.falsegreen-baseline.json` and the ratchet only tightens.
+A finding is fingerprinted by relative path, code, detail, and normalized source line - not line number, so prepending code does not re-trigger a baselined finding. Commit `.falsegreen-baseline.json` and the ratchet only tightens.
 
 ---
 
 ## How it compares
 
-- **ruff / flake8-pytest-style** — mature, fast lint rules. Overlaps on broad `raises` (PT011) and assert-in-except (PT017). Run both: falsegreen adds uncollected tests, always-true asserts, self-comparison, mock typos, duplicate parametrize cases, and more.
-- **PyNose / pytest-smell** — test-smell catalogs from research. Broader taxonomy, but no commit gate and no oracle-correctness check.
-- **mutmut / cosmic-ray** — mutation testing, the most honest measure of whether a green suite fails when the code is wrong. Complementary and heavier. falsegreen is the cheap pre-filter you run on every commit; mutation testing is the deep audit you run on suites that matter.
-- **[falsegreen-skill](https://github.com/vinicq/falsegreen-skill)** — the LLM companion for the semantic pass and for TypeScript, JavaScript, Java, and other languages.
+- **ruff / flake8-pytest-style** - mature, fast lint rules. Overlaps on broad `raises` (PT011) and assert-in-except (PT017). Run both: falsegreen adds uncollected tests, always-true asserts, self-comparison, mock typos, duplicate parametrize cases, and more.
+- **PyNose / pytest-smell** - test-smell catalogs from research. Broader taxonomy, but no commit gate and no oracle-correctness check.
+- **mutmut / cosmic-ray** - mutation testing, the most honest measure of whether a green suite fails when the code is wrong. Complementary and heavier. falsegreen is the cheap pre-filter you run on every commit; mutation testing is the deep audit you run on suites that matter.
+- **[falsegreen-skill](https://github.com/vinicq/falsegreen-skill)** - the LLM companion for the semantic pass and for TypeScript, JavaScript, Java, and other languages.
 
 The defensible gap: a deterministic commit gate that catches the mechanical false-positive patterns with zero runtime dependencies, paired with an LLM semantic layer that catches the oracle-correctness cases no static tool can see.
 
@@ -383,10 +381,10 @@ falsegreen/
 
 ## Contributing, security, license
 
-- [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, how to add a detection rule, the false-positive policy, Conventional Commits.
-- [SECURITY.md](SECURITY.md) — how to report a vulnerability privately.
-- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — Contributor Covenant 2.1.
-- [CREDITS.md](CREDITS.md) — research falsegreen builds on (Soares rotten-green work, PyNose, test-smell catalog, agentic-LLM studies), with author credit.
+- [CONTRIBUTING.md](CONTRIBUTING.md) - dev setup, how to add a detection rule, the false-positive policy, Conventional Commits.
+- [SECURITY.md](SECURITY.md) - how to report a vulnerability privately.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) - Contributor Covenant 2.1.
+- [CREDITS.md](CREDITS.md) - research falsegreen builds on (Soares rotten-green work, PyNose, test-smell catalog, agentic-LLM studies), with author credit.
 - License: **MIT**, see [LICENSE](LICENSE).
 
 ## Contributors ✨
