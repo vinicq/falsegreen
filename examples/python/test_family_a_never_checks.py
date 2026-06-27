@@ -52,7 +52,7 @@ def test_c3_swallowed_assert():
         pass
 
 # CLEAN: best-effort teardown with the real check outside the try.
-def test_c3_cleanup_only_clean():
+def test_c3_cleanup_only_clean():  # falsegreen: ignore[M2]  (length is incidental, not the smell)
     assert compute() == 1
     try:
         cleanup()
@@ -90,7 +90,7 @@ def test_c17_skip_on_failure():
         pytest.skip("broke")           # C17 - red turns yellow
 
 # CLEAN: the optional-dependency guard - skip on ImportError, then assert.
-def test_c17_optional_dep_clean():
+def test_c17_optional_dep_clean():  # falsegreen: ignore[M2]  (length is incidental, not the smell)
     try:
         import numpy
     except ImportError:

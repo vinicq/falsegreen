@@ -73,7 +73,7 @@ def test_c31_assigned_not_asserted(capsys):
 
 # CLEAN: the captured output is asserted.
 def test_c31_asserted_clean(capsys):
-    print("hello")
+    print("hello")  # falsegreen: ignore[D6]  (print is the subject under test, asserted below)
     captured = capsys.readouterr()
     assert captured.out == "hello\n"
 

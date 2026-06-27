@@ -6,11 +6,14 @@ name: codex-review-gate
 # not touched still passes.
 #
 # - Re-runs on review, comment, and thread resolve/unresolve events, so the gate
-#   clears as soon as a thread is resolved and re-fires if one is reopened.
+#   clears as soon as a thread is resolved and re-fires if one is reopened. The
+#   pull_request_review_thread trigger is filtered to resolved/unresolved so the
+#   required check re-runs when a dev resolves a Codex thread; without it the
+#   check would stay failed after the thread that blocked it is resolved.
 # - Outdated threads (their line changed in a newer push) are ignored: each push
 #   re-baselines the review, and Codex posts fresh threads if an issue remains.
-# - If a PR has more than 100 threads the gate fails closed and asks for a manual
-#   review rather than risk passing on an unread page.
+# - The reviewThreads query is paginated to the end before counting, so a PR with
+#   more than 100 threads cannot hide an unresolved one on a later page.
 #
 # A 👍 reaction is not a resolution signal; resolve the thread to clear the gate.
 
@@ -19,6 +22,7 @@ on:
   pull_request_review:
   pull_request_review_comment:
   pull_request_review_thread:
+    types: [resolved, unresolved]
 
 permissions:
   pull-requests: read
@@ -34,7 +38,23 @@ jobs:
           REPO: ${{ github.event.repository.name }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          n=$(gh api graphql -f query='query($o:String!,$r:String!,$p:Int!){repository(owner:$o,name:$r){pullRequest(number:$p){reviewThreads(first:100){nodes{isResolved isOutdated comments(first:1){nodes{author{login}}}}}}}}' -F o="$OWNER" -F r="$REPO" -F p="$PR" --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false and .isOutdated == false) | select(.comments.nodes[0].author.login | startswith("chatgpt-codex"))] | length')
+          query='query($o:String!,$r:String!,$p:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$p){reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{isResolved isOutdated comments(first:1){nodes{author{login}}}}}}}}'
+          cursor=""
+          n=0
+          while : ; do
+            if [ -z "$cursor" ]; then
+              page=$(gh api graphql -f query="$query" -F o="$OWNER" -F r="$REPO" -F p="$PR")
+            else
+              page=$(gh api graphql -f query="$query" -F o="$OWNER" -F r="$REPO" -F p="$PR" -F c="$cursor")
+            fi
+            count=$(echo "$page" | jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false and .isOutdated == false) | select(.comments.nodes[0].author.login | startswith("chatgpt-codex"))] | length')
+            n=$((n + count))
+            has_next=$(echo "$page" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+            if [ "$has_next" != "true" ]; then
+              break
+            fi
+            cursor=$(echo "$page" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+          done
           echo "Open Codex review threads on the current diff: $n"
           if [ "$n" -ne 0 ]; then
             echo "::error::$n unresolved Codex review thread(s) on the current diff. Resolve them before merging."

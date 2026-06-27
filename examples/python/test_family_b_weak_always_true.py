@@ -44,7 +44,7 @@ def test_c6_exact_count_clean():
     assert len(html.split()) == 5
 
 # CLEAN: a boolean predicate call is the result itself, not weak truthiness.
-def test_c6_predicate_clean():
+def test_c6_predicate_clean():  # falsegreen: ignore[D1]  (assertion count is incidental, not the smell)
     assert isinstance(get_backend(), Backend)
     assert user().is_admin()
 
@@ -72,7 +72,7 @@ def test_c7_value_equality_clean():
     assert f(d) == f(d)
 
 # CLEAN: reflexive plus a discriminating peer is a deliberate __eq__ test.
-def test_c7_eq_semantics_clean():
+def test_c7_eq_semantics_clean():  # falsegreen: ignore[D1]  (assertion count is incidental, not the smell)
     x = IntList([1, 2, 3])
     assert x == x
     assert x != "foo"
@@ -85,7 +85,7 @@ def test_c8_float_eq():
     assert total() == 0.3              # C8 - fragile exact float
 
 # CLEAN: 0.0 and 1.0 are exact all/none sentinels, not the rounding smell.
-def test_c8_sentinel_clean():
+def test_c8_sentinel_clean():  # falsegreen: ignore[D1]  (assertion count is incidental, not the smell)
     assert ratio() == 1.0
     assert ratio() == 0.0
 
@@ -207,7 +207,7 @@ def test_c34_eq_none():
     assert get_result() == None        # C34 - use: assert get_result() is None
 
 # CLEAN: the idiomatic forms.
-def test_c34_clean():
+def test_c34_clean():  # falsegreen: ignore[D1]  (assertion count is incidental, not the smell)
     assert "x" not in ["a", "b"]
     assert is_valid()
     assert get_result() is None
