@@ -11,6 +11,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that it was called, not how many times — a weak oracle. `C44` (always-true) now also covers
   `assert m.call_count >= 0` / `> -1`. Both require the receiver to be a known mock; a real count
   check (`== N`, `>= 1`) stays quiet (#91).
+- `C2c` (low, J1): a `with self.subTest(...)` block that wraps work but asserts nothing — the
+  subTest analogue of an empty test. More specific than `C2b`, which it suppresses for this shape;
+  a subTest that asserts, raises, or delegates to a `check_*`/`verify_*` helper stays quiet (#85).
+- `C8b` (low, J4): `assertAlmostEqual`/`assertNotAlmostEqual` or `== pytest.approx(...)` with no
+  explicit tolerance — the default 7 places / 1e-6 relative hides a meaningfully wrong value.
+  A `places=`/`delta=` (incl. positional places) or `rel=`/`abs=` keeps it quiet (#86).
 
 ## [0.6.0] - 2026-06-28
 

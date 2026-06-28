@@ -12,7 +12,7 @@
 
 A test that tells you a broken program is safe is worse than no test at all. AI coding assistants produce these at scale. The tool catches them before they merge.
 
-The scanner is a zero-dependency AST pass. It validates each test against 44 active false-positive codes, patterns a parser can prove: an assertion that never runs, a check that is empty or always true, a swallowed exception, a mock assertion with a typo, a check stranded in dead code. HIGH findings block the commit; LOW ones warn. A third group (diagnostic and coupling, six codes) can be enabled per project for informational checks that do not affect the exit code. The semantic layer, intent-based patterns no static tool can see, lives in [falsegreen-skill](https://github.com/vinicq/falsegreen-skill), the LLM companion covering Python and other languages.
+The scanner is a zero-dependency AST pass. It validates each test against 47 active false-positive codes, patterns a parser can prove: an assertion that never runs, a check that is empty or always true, a swallowed exception, a mock assertion with a typo, a check stranded in dead code. HIGH findings block the commit; LOW ones warn. A third group (diagnostic and coupling, six codes) can be enabled per project for informational checks that do not affect the exit code. The semantic layer, intent-based patterns no static tool can see, lives in [falsegreen-skill](https://github.com/vinicq/falsegreen-skill), the LLM companion covering Python and other languages.
 
 The checks are grounded in the rotten-green-test research (Soares 2023; Delplanque et al., ICSE 2019) and cross-walked against the published test-smell catalog. See [CREDITS.md](CREDITS.md).
 
@@ -73,7 +73,7 @@ The plain-language guide, with a real-world analogy and before/after for each ca
 
 ## What it detects
 
-The scanner ships 44 active false-positive codes across the five families, plus `CC` (commented-out assert). HIGH findings block a commit; LOW ones warn. Cases that require reading production intent (10, 11, 12, 15, 18) need the semantic layer.
+The scanner ships 47 active false-positive codes across the five families, plus `CC` (commented-out assert). HIGH findings block a commit; LOW ones warn. Cases that require reading production intent (10, 11, 12, 15, 18) need the semantic layer.
 
 | # | Case | Why it fools you | Code | Conf |
 |---|---|---|---|---|
@@ -125,12 +125,14 @@ Eleven additional codes covering the most common patterns in real test suites:
 | `C37` | Duplicate case in `@pytest.mark.parametrize` — same argument set runs twice | LOW |
 | `CC` | Commented-out assert | LOW |
 
-Ten more from the consolidated catalog:
+More from the consolidated catalog:
 
 | Code | Pattern | Conf |
 |---|---|---|
+| `C2c` | `self.subTest(...)` block wraps work but asserts nothing — the subTest analogue of an empty test | LOW |
 | `C6b` | Assertion coupled to positional argument layout — breaks on a benign reorder, not a bug | LOW |
 | `C6c` | Asserts a mock's `call_count` truthiness — only that it was called, not how many times | LOW |
+| `C8b` | Approximate-equality with no explicit tolerance (`assertAlmostEqual`, `== pytest.approx()`) — the default tolerance hides a wrong value | LOW |
 | `C11a` | Self-confirming literal — the expected value is assigned by the test itself | LOW |
 | `C24` | Module-global mutable state shared across tests — borrowed state, not isolation | LOW |
 | `C38` | Two test functions share a name — the later one silently overrides the first | HIGH |
@@ -235,7 +237,7 @@ Seven additional codes surface smells that do not create false positives but hur
 
 | Layer | What it is | When it runs | Catches |
 |---|---|---|---|
-| **Scanner** (this repo) | Zero-dependency AST analysis | CLI, CI, pre-commit | 44 active false-positive codes + 6 opt-in diagnostic and coupling codes |
+| **Scanner** (this repo) | Zero-dependency AST analysis | CLI, CI, pre-commit | 47 active false-positive codes + 6 opt-in diagnostic and coupling codes |
 | **Semantic pass** ([falsegreen-skill](https://github.com/vinicq/falsegreen-skill)) | LLM-based analysis, Python and other languages | on demand | bug-freezing patterns no static tool can see (cases 10/11/12/15/18) |
 
 The scanner is the fast, deterministic pre-filter. For TypeScript, JavaScript, Java, and other languages, use [falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
