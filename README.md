@@ -299,12 +299,18 @@ Add to `.pre-commit-config.yaml`:
 
 ```yaml
   - repo: https://github.com/vinicq/falsegreen
-    rev: v0.3.0
+    rev: v0.6.0
     hooks:
       - id: falsegreen
 ```
 
 Then `pre-commit install`. On each commit it scans the staged test files. HIGH findings block the commit. Bypass once with `git commit --no-verify`, or set `FALSEGREEN_BLOCK=0` to make the hook warn-only.
+
+#### Keeping the hook current
+
+- **Bump the pinned `rev`.** `rev` is pinned to a tag (`v0.6.0` above), so the hook never changes under you. Run `pre-commit autoupdate` to rewrite it to the latest release, then commit the updated `.pre-commit-config.yaml`. Pin a tag, never a branch, so local runs and CI use the same scanner.
+- **`--staged` and `pass_filenames`.** The hook entry is `falsegreen --staged` and `.pre-commit-hooks.yaml` sets `pass_filenames: false`. The hook reads the staged test files itself from git, so it does not need pre-commit to append the matched file list. Leaving `pass_filenames` at its default (true) would append every matched path on top of `--staged`, scanning some files twice. Do not re-enable it or add file arguments in your config; let `--staged` own the file selection.
+- **`stages` override.** The hook runs at the `pre-commit` stage by default. To run it on push instead, set `stages: [pre-push]` under the hook in your config. A heavier suite can keep the fast HIGH gate at commit time and a fuller pass at push time.
 
 Raw git hook (without the pre-commit framework):
 
