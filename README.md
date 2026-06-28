@@ -172,11 +172,11 @@ gap is honest, not hidden. The reasoning follows the consolidated catalog.
   It stays a note in the skill.
 
 **Runtime and culture (not a per-file property).** The `PL` series is about how the
-suite is invoked and configured, not what a single test file contains. `PL2`, `PL7`,
-and `PL8` are already covered by `--config-audit` (warnings not promoted to errors, no
-coverage gate, `addopts` that stops the run early). The rest need execution or pipeline
-inspection: `PL1` (`python -O` / `PYTHONOPTIMIZE` strips every `assert` at runtime),
-`PL4` (a collection error counted as "0 tests" while CI stays green), and
+suite is invoked and configured, not what a single test file contains. `PL1`, `PL2`,
+`PL7`, and `PL8` are covered by `--config-audit` (`python -O`/`PYTHONOPTIMIZE` strips every
+`assert`, warnings not promoted to errors, no coverage gate, `addopts` that stops the run
+early), read from the pytest config it parses. The rest need execution or pipeline
+inspection: `PL4` (a collection error counted as "0 tests" while CI stays green), and
 `PL3`, `PL5`, `PL6` (a coverage pragma in production code, `importorskip` hiding a broken
 import, CI running a subset via `-k` / `-m`). They are documented, not promised, and sit
 outside the "test file" target.
@@ -285,7 +285,7 @@ falsegreen --config-audit         # audit pytest/coverage config (project-layer 
 falsegreen --disable C6,C2b       # turn specific codes off
 ```
 
-`--config-audit` is a separate mode: instead of scanning test files, it reads the project's pytest and coverage config (`pyproject.toml`, `pytest.ini`, `tox.ini`, `setup.cfg`) and reports the project-layer ways a suite stays green by configuration: `PL2` (`filterwarnings` does not promote warnings to errors), `PL7` (no coverage gate), `PL8` (`addopts` stops the run early with `-x`/`--maxfail`). These complement the per-file scan, which cannot see config.
+`--config-audit` is a separate mode: instead of scanning test files, it reads the project's pytest and coverage config (`pyproject.toml`, `pytest.ini`, `tox.ini`, `setup.cfg`) and reports the project-layer ways a suite stays green by configuration: `PL1` (`python -O` / `PYTHONOPTIMIZE` strips every `assert` at runtime), `PL2` (`filterwarnings` does not promote warnings to errors), `PL7` (no coverage gate), `PL8` (`addopts` stops the run early with `-x`/`--maxfail`). These complement the per-file scan, which cannot see config.
 
 Each finding is reported with its pyramid level (unit / integration / e2e, read from the file's imports) and a one-line fix hint, and the text summary breaks the findings down by level and lists the most common fixes. `--output` takes a file or a directory: an extension-less or trailing-slash path (e.g. `.falsegreen/`) receives `report.<ext>` for the chosen format. Reports are run artifacts; keep the output directory gitignored.
 

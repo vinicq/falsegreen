@@ -1160,6 +1160,20 @@ def test_sarif_level_follows_severity_override(tmp_path):
     assert levels["C8"] == "error"  # promoted via config, SARIF reflects it
 
 
+def test_sarif_rules_carry_distinct_helpuri_and_fulldescription(tmp_path):
+    _f, findings = _mixed_findings(tmp_path)
+    doc = json.loads(render_sarif(findings))
+    assert doc["version"] == "2.1.0"
+    rules = doc["runs"][0]["tool"]["driver"]["rules"]
+    uris = [r["helpUri"] for r in rules]
+    assert len(set(uris)) == len(uris)  # one distinct deep link per rule id
+    assert all(u.startswith("https://vinicq.github.io/falsegreen-docs/catalog/python/#")
+               for u in uris)
+    by_id = {r["id"]: r for r in rules}
+    assert by_id["C5"]["helpUri"].endswith("#c5")  # deterministic per rule id
+    assert all(r["fullDescription"]["text"] for r in rules)  # non-empty
+
+
 def test_junit_is_valid_xml_with_counts(tmp_path):
     _f, findings = _mixed_findings(tmp_path)
     root = ET.fromstring(render_junit(findings))
@@ -2837,6 +2851,44 @@ def test_c37_is_low_confidence(tmp_path):
     assert findings and findings[0].conf == "low"
 
 
+def test_c37_non_adjacent_literal_dup_fires(tmp_path):
+    # the repeat is separated by a distinct case; comparison must be pairwise,
+    # not adjacent. [1, 2, 1] runs the x==1 scenario twice.
+    f = _write(tmp_path / "test_c37e.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.parametrize("x", [1, 2, 1])
+        def test_positive(x):
+            assert x > 0
+    """))
+    assert "C37" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c37_distinct_literals_stay_clean(tmp_path):
+    f = _write(tmp_path / "test_c37f.py", textwrap.dedent("""
+        import pytest
+
+        @pytest.mark.parametrize("x", [1, 2, 3])
+        def test_positive(x):
+            assert x > 0
+    """))
+    assert "C37" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c37_non_literal_repeat_stays_quiet(tmp_path):
+    # two identical dynamic cases (a call) may resolve to different runtime
+    # values, so they are not a provable duplicate: C37 must skip them.
+    f = _write(tmp_path / "test_c37g.py", textwrap.dedent("""
+        import pytest
+        from mod import make
+
+        @pytest.mark.parametrize("x", [make(), make()])
+        def test_dyn(x):
+            assert x
+    """))
+    assert "C37" not in {a.code for a in analyze_file(str(f))}
+
+
 # ---------------------------------------------------------------------------
 # Issue #31 — xUnit / unittest.TestCase subclass support
 # ---------------------------------------------------------------------------
@@ -3771,7 +3823,49 @@ def test_config_audit_cli_exit_and_output(tmp_path):
 
 def test_pl_codes_have_fix_hints():
     from falsegreen.scanner import FIX_HINTS
-    assert {"PL2", "PL7", "PL8"} <= set(FIX_HINTS)
+    assert {"PL1", "PL2", "PL7", "PL8"} <= set(FIX_HINTS)
+
+
+def test_config_audit_pl1_tox_dash_o(tmp_path):
+    # tox running python -O -m pytest strips every assert: the suite goes green
+    # with no checks. PL1 fires; it is a project WARNING that never blocks.
+    _write(tmp_path / "tox.ini", """
+        [testenv]
+        commands = python -O -m pytest
+        [pytest]
+        filterwarnings = error
+        addopts = --cov-fail-under=80
+    """)
+    from falsegreen.scanner import CASES
+    findings = audit_config(str(tmp_path))
+    codes = {f.code for f in findings}
+    assert "PL1" in codes
+    assert CASES["PL1"][1] == "low"  # never blocks
+
+
+def test_config_audit_no_pl1_without_optimize(tmp_path):
+    _write(tmp_path / "tox.ini", """
+        [testenv]
+        commands = python -m pytest
+        [pytest]
+        filterwarnings = error
+        addopts = --cov-fail-under=80
+    """)
+    assert "PL1" not in {f.code for f in audit_config(str(tmp_path))}
+
+
+def test_config_audit_no_pl1_for_pythonoptimize_zero(tmp_path):
+    # PYTHONOPTIMIZE=0 leaves asserts ON: the safe config, one token off the BAD
+    # one. It must NOT fire PL1.
+    _write(tmp_path / "tox.ini", """
+        [testenv]
+        setenv = PYTHONOPTIMIZE=0
+        commands = python -m pytest
+        [pytest]
+        filterwarnings = error
+        addopts = --cov-fail-under=80
+    """)
+    assert "PL1" not in {f.code for f in audit_config(str(tmp_path))}
 
 
 def test_version_lockstep():

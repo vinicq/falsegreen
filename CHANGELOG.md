@@ -7,6 +7,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `PL1` (low, J1, project layer): `--config-audit` now reports when the resolved pytest config runs
+  the suite under `python -O` / `-OO` or sets `PYTHONOPTIMIZE`, which strips every `assert` at
+  runtime and turns the whole suite green with no checks. Detection is scoped to the config file
+  the audit already parses (a tox `commands = python -O -m pytest`, an `addopts`, or a
+  `[pytest]`/`[tool:pytest]` section); CI YAML is not inspected. It is a project WARNING that never
+  blocks, alongside `PL2`/`PL7`/`PL8` (#92).
 - `C6c` (low, J4): asserting a mock's `call_count` truthiness (`assert m.call_count`) only checks
   that it was called, not how many times — a weak oracle. `C44` (always-true) now also covers
   `assert m.call_count >= 0` / `> -1`. Both require the receiver to be a known mock; a real count
@@ -17,6 +23,21 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `C8b` (low, J4): `assertAlmostEqual`/`assertNotAlmostEqual` or `== pytest.approx(...)` with no
   explicit tolerance — the default 7 places / 1e-6 relative hides a meaningfully wrong value.
   A `places=`/`delta=` (incl. positional places) or `rel=`/`abs=` keeps it quiet (#86).
+
+### Changed
+- `C37` now compares parametrize argument sets pairwise by literal value, not by adjacency or raw
+  AST shape, so a non-adjacent repeat such as `[1, 2, 1]` is caught (#87).
+- SARIF rules now carry a per-rule `helpUri` deep link into the published catalog
+  (`https://vinicq.github.io/falsegreen-docs/catalog/python/#<codeid>`) and a `fullDescription`
+  built from the case title and its fix hint, instead of a single repo-root link for every rule.
+  The link lands on the catalog page anchored by the lowercased code id (an approximation: the
+  exact docs heading slug is not reproducible from the case title), and is deterministic per rule
+  id (#89).
+
+### Fixed
+- `C37` no longer flags a parametrize case whose values are dynamic (a `Name`, a call, an f-string)
+  or whose `pytest.param(..., id=...)` carries a non-literal id: two such cases can resolve to
+  different runtime values or distinct ids, so they are not a provable duplicate (#87).
 
 ## [0.6.0] - 2026-06-28
 
