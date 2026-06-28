@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-28
+
 ### Fixed
 - C20 no longer treats an arbitrary `obj.fail(...)` (e.g. `logger.fail()`, `result.fail()`) as a
   terminator, so a real assertion after it is not wrongly reported as dead code (HIGH false
@@ -362,7 +364,8 @@ First release.
   false positives: C6 on called boolean predicates, C1 on literal-collection
   loops, and C7 on `f() is f()` (the lru_cache / singleton identity test).
 
-[Unreleased]: https://github.com/vinicq/falsegreen/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/vinicq/falsegreen/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/vinicq/falsegreen/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/vinicq/falsegreen/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/vinicq/falsegreen/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/vinicq/falsegreen/compare/v0.2.2...v0.3.0
