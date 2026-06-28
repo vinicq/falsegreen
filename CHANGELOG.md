@@ -6,6 +6,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- C20 no longer treats an arbitrary `obj.fail(...)` (e.g. `logger.fail()`, `result.fail()`) as a
+  terminator, so a real assertion after it is not wrongly reported as dead code (HIGH false
+  positive). Only `pytest.fail`, a bare imported `fail()`, and unittest `self.fail()`/`cls.fail()`
+  terminate (#103).
+- C16 no longer flags `requests.get(url, timeout=5)` / `cache.get(k, timeout=5)`: `get` is dropped
+  from the concurrency-wait set because it collides with the recommended HTTP/cache form
+  (`result`/`join`/`wait`/`wait_for` still flag a fixed concurrency-wait timeout) (#105).
+
 ### Tests
 - Precision-lock corpus (`tests/test_precision_corpus.py`): one legitimate look-alike per
   HIGH code, asserting no HIGH code fires on it, so a blocking false positive cannot merge

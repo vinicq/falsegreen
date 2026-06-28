@@ -306,8 +306,11 @@ NONE_RETURNING_MUTATORS = {
     "insert", "clear",
 }
 TIMEOUT_KEYWORDS = {"timeout", "segment_timeout"}
+# Blocking concurrency waits that take a timeout= kwarg. `get` is deliberately excluded:
+# it collides with the very common requests.get(timeout=)/cache.get(timeout=) HTTP/cache
+# form, which is the recommended pattern, not a concurrency wait (false positive).
 CONCURRENCY_TIMEOUT_CALLS = {
-    "get", "join", "wait", "wait_for", "sleep", "result",
+    "join", "wait", "wait_for", "sleep", "result",
 }
 
 # Decorator leaf names that indicate a retry/repeat loop. These make a test
@@ -1584,7 +1587,10 @@ def _stmt_is_terminator(stmt):
         return True
     if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
         t = dotted_name(stmt.value.func)
-        if t.endswith("pytest.fail") or t.split(".")[-1] == "fail":
+        # A genuine fail() terminator: pytest.fail, a bare imported fail(), or unittest's
+        # self.fail()/cls.fail(). An arbitrary obj.fail() (logger.fail, result.fail) is NOT a
+        # terminator and must not strand the assertion below it (mirrors is_pytest_skip_call).
+        if t in ("pytest.fail", "fail", "self.fail", "cls.fail"):
             return True
     if isinstance(stmt, ast.Assert):  # assert False / assert 0 always raises
         v = _const_value(stmt.test)

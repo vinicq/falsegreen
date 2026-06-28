@@ -2798,6 +2798,55 @@ def test_c16_fires_for_thread_join_with_timeout(tmp_path):
     """)
 
 
+def test_no_c16_for_requests_get_with_timeout(tmp_path):
+    # requests.get(timeout=) is the recommended HTTP pattern, not a concurrency wait (#105).
+    assert "C16" not in scan_source(tmp_path, """
+        import requests
+        def test_http():
+            r = requests.get("http://api.example.com", timeout=5)
+            assert r.status_code == 200
+    """)
+
+
+def test_no_c16_for_cache_get_with_timeout(tmp_path):
+    # cache.get(timeout=) is a TTL, not a concurrency wait (#105).
+    assert "C16" not in scan_source(tmp_path, """
+        def test_cache():
+            v = cache.get("k", timeout=5)
+            assert v == 1
+    """)
+
+
+def test_no_c20_for_non_pytest_fail_attribute(tmp_path):
+    # logger.fail()/result.fail() are not terminators; the assertion after them runs (#103).
+    assert "C20" not in scan_source(tmp_path, """
+        def test_logs_then_asserts():
+            logger.fail("oops")
+            assert run() == 1
+    """)
+
+
+def test_c20_still_fires_for_pytest_fail(tmp_path):
+    # A genuine pytest.fail() is a terminator: the assertion below it is dead code.
+    assert "C20" in scan_source(tmp_path, """
+        import pytest
+        def test_dead():
+            pytest.fail("stop")
+            assert run() == 1
+    """)
+
+
+def test_c20_still_fires_for_unittest_self_fail(tmp_path):
+    # unittest TestCase.fail() raises, so it is a terminator too.
+    assert "C20" in scan_source(tmp_path, """
+        import unittest
+        class T(unittest.TestCase):
+            def test_dead(self):
+                self.fail("stop")
+                assert run() == 1
+    """)
+
+
 # ---------------------------------------------------------------------------
 # Issue #21 — C24: module-level mutable state mutated by a test
 # ---------------------------------------------------------------------------
