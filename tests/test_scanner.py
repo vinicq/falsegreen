@@ -3465,3 +3465,20 @@ def test_config_audit_cli_exit_and_output(tmp_path):
 def test_pl_codes_have_fix_hints():
     from falsegreen.scanner import FIX_HINTS
     assert {"PL2", "PL7", "PL8"} <= set(FIX_HINTS)
+
+
+def test_version_lockstep():
+    # The scanner __version__ must match pyproject.toml; a release bump that forgets the
+    # constant makes --version and the JSON report lie (regression: it was stuck at 0.3.0).
+    import re
+    import pathlib
+    from falsegreen.scanner import __version__
+    pyproject = pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml"
+    m = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M)
+    assert m, "version not found in pyproject.toml"
+    cff = pyproject.parent / "CITATION.cff"
+    if cff.exists():
+        cm = re.search(r'^version:\s*([^\s]+)', cff.read_text(encoding="utf-8"), re.M)
+        assert cm and cm.group(1) == m.group(1), "CITATION.cff version out of lockstep with pyproject"
+    assert __version__ == m.group(1), (
+        "scanner.__version__ %r != pyproject %r" % (__version__, m.group(1)))
