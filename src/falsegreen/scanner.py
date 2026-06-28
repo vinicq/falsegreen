@@ -77,6 +77,7 @@ CASES = {
     "C5":  ("always-true check (assert True / tuple / or True)", "high", "J2"),
     "C6":  ("weak check (only verifies that something came back)", "low", "J4"),
     "C6b": ("assertion coupled to positional argument layout", "low", "J5"),
+    "C6c": ("asserts a mock's call_count truthiness — only that it was called, not how many times", "low", "J4"),
     "C7":  ("compares a thing to itself (always matches)", "high", "J2"),
     "C8":  ("exact equality on a float (fails on rounding, not bugs)", "low", "J4"),
     "C9":  ("pytest.raises too broad (accepts any error)", "low", "J4"),
@@ -154,6 +155,7 @@ FIX_HINTS = {
     "C5":  "assert the real behaviour, not a constant or tautology",
     "C6":  "assert the value, not just that something came back",
     "C6b": "assert by keyword/field, not by positional argument order",
+    "C6c": "assert the expected call_count (== N), not just its truthiness",
     "C7":  "compare against an independent expected value, not the subject itself",
     "C8":  "use pytest.approx() or a tolerance instead of exact float equality",
     "C9":  "match the specific exception type, not a broad base class",
@@ -873,6 +875,34 @@ def assert_numeric_tautology(test):
         if isinstance(op, ast.Lt) and _int_const(left) == -1:
             return True
     return False
+
+
+def _is_mock_call_count(node, mock_names):
+    """True if `node` is `<mock>.call_count` for a known mock receiver (#91)."""
+    return isinstance(node, ast.Attribute) and node.attr == "call_count" \
+        and root_name(node) in mock_names
+
+
+def mock_call_count_smell(test, mock_names):
+    """An assertion on a mock's call_count that verifies nothing (#91):
+      - bare `assert m.call_count` is truthy on any count >= 1 (weak oracle, C6c);
+      - `assert m.call_count >= 0` / `> -1` is a tautology, always true (C44).
+    A real count check (`== N`, `>= 1`, `> 0`) stays quiet. Returns the code or None."""
+    if _is_mock_call_count(test, mock_names):
+        return "C6c"
+    if isinstance(test, ast.Compare) and len(test.ops) == 1:
+        op, left, right = test.ops[0], test.left, test.comparators[0]
+        if _is_mock_call_count(left, mock_names):
+            if isinstance(op, ast.GtE) and _int_const(right) == 0:
+                return "C44"
+            if isinstance(op, ast.Gt) and _int_const(right) == -1:
+                return "C44"
+        if _is_mock_call_count(right, mock_names):
+            if isinstance(op, ast.LtE) and _int_const(left) == 0:
+                return "C44"
+            if isinstance(op, ast.Lt) and _int_const(left) == -1:
+                return "C44"
+    return None
 
 
 def assert_self_compare(test):
@@ -1918,7 +1948,14 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             if n.lineno in dead_lines:
                 continue
             test = n.test
-            if assert_always_true(test):
+            _cc = mock_call_count_smell(test, mock_names)
+            if _cc == "C44":
+                findings.append(Finding(file, n.lineno, "C44",
+                                        "a mock's call_count is never negative — this comparison is always true"))
+            elif _cc == "C6c":
+                findings.append(Finding(file, n.lineno, "C6c",
+                                        "asserts only that the mock was called, not how many times"))
+            elif assert_always_true(test):
                 findings.append(Finding(file, n.lineno, "C5"))
             elif assert_always_truthy_object(test):
                 findings.append(Finding(file, n.lineno, "C42",

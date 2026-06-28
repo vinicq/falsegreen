@@ -130,6 +130,7 @@ Ten more from the consolidated catalog:
 | Code | Pattern | Conf |
 |---|---|---|
 | `C6b` | Assertion coupled to positional argument layout — breaks on a benign reorder, not a bug | LOW |
+| `C6c` | Asserts a mock's `call_count` truthiness — only that it was called, not how many times | LOW |
 | `C11a` | Self-confirming literal — the expected value is assigned by the test itself | LOW |
 | `C24` | Module-global mutable state shared across tests — borrowed state, not isolation | LOW |
 | `C38` | Two test functions share a name — the later one silently overrides the first | HIGH |
@@ -137,7 +138,7 @@ Ten more from the consolidated catalog:
 | `C41` | Assertion on an in-place method that returns `None` (`assert not lst.sort()`) — trivially satisfied | LOW |
 | `C42` | `assert` on a generator expression or lambda — the object is always truthy | HIGH |
 | `C43` | `pytest.skip()` after test logic — the checks below it never run | LOW |
-| `C44` | Numeric tautology (`len(x) >= 0`, `abs(x) >= 0`) — always true | HIGH |
+| `C44` | Numeric tautology (`len(x) >= 0`, `abs(x) >= 0`, a mock's `call_count >= 0`) — always true | HIGH |
 | `C45` | Empty `@pytest.mark.parametrize` list — the test is generated with zero cases | HIGH |
 | `C48` | Dark patch — the test forces a test-mode flag (`os.environ["TESTING"]`, `settings.TESTING`) then asserts, exercising the product's test-only branch | LOW |
 

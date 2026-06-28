@@ -3060,6 +3060,51 @@ def test_no_c44_for_real_len_check(tmp_path):
     """)
 
 
+# --- #91: weak/tautological assertions on a mock's call_count ---------------
+
+def test_c44_mock_call_count_ge_zero_is_tautology(tmp_path):
+    # call_count on a Mock is never negative, so >= 0 is always true (#91).
+    assert "C44" in scan_source(tmp_path, """
+        def test_called(mock_svc):
+            run(mock_svc)
+            assert mock_svc.call_count >= 0
+    """)
+
+
+def test_c44_mock_call_count_gt_minus_one_is_tautology(tmp_path):
+    assert "C44" in scan_source(tmp_path, """
+        def test_called(mock_svc):
+            assert mock_svc.call_count > -1
+    """)
+
+
+def test_c6c_bare_mock_call_count_is_weak(tmp_path):
+    # Bare truthiness passes on any count >= 1: it checks "was it called", not how often (#91).
+    assert "C6c" in scan_source(tmp_path, """
+        def test_called(mock_svc):
+            run(mock_svc)
+            assert mock_svc.call_count
+    """)
+
+
+def test_no_c6c_c44_for_a_real_call_count_check(tmp_path):
+    # An exact or lower-bounded count is a genuine check — stays quiet.
+    codes = scan_source(tmp_path, """
+        def test_called(mock_svc):
+            assert mock_svc.call_count == 2
+    """)
+    assert "C6c" not in codes
+    assert "C44" not in codes
+
+
+def test_no_c6c_for_call_count_on_a_non_mock(tmp_path):
+    # The receiver must be a known mock; a plain object's .call_count is not C6c.
+    assert "C6c" not in scan_source(tmp_path, """
+        def test_x(counter):
+            assert counter.call_count
+    """)
+
+
 def test_c45_empty_parametrize_runs_zero_times(tmp_path):
     assert "C45" in scan_source(tmp_path, """
         import pytest

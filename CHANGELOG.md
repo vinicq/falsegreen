@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `C6c` (low, J4): asserting a mock's `call_count` truthiness (`assert m.call_count`) only checks
+  that it was called, not how many times — a weak oracle. `C44` (always-true) now also covers
+  `assert m.call_count >= 0` / `> -1`. Both require the receiver to be a known mock; a real count
+  check (`== N`, `>= 1`) stays quiet (#91).
+
 ## [0.6.0] - 2026-06-28
 
 ### Fixed
