@@ -3465,3 +3465,22 @@ def test_config_audit_cli_exit_and_output(tmp_path):
 def test_pl_codes_have_fix_hints():
     from falsegreen.scanner import FIX_HINTS
     assert {"PL2", "PL7", "PL8"} <= set(FIX_HINTS)
+
+
+def test_version_lockstep():
+    # __version__ must equal pyproject.toml and CITATION.cff. Single equality-chain assert,
+    # no conditional and no truthiness check, so the scanner's own self-scan stays clean.
+    import re
+    import pathlib
+    from falsegreen.scanner import __version__
+    root = pathlib.Path(__file__).resolve().parent.parent
+
+    def _ver(path, pat):
+        m = re.search(pat, path.read_text(encoding="utf-8"), re.M)
+        return m.group(1) if m else None
+
+    pyproject_v = _ver(root / "pyproject.toml", r'^version\s*=\s*"([^"]+)"')
+    cff_v = _ver(root / "CITATION.cff", r'^version:\s*(\S+)')
+    assert __version__ == pyproject_v == cff_v, (
+        "version lockstep broken: __version__=%s pyproject=%s CITATION=%s"
+        % (__version__, pyproject_v, cff_v))
