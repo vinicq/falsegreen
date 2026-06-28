@@ -76,11 +76,12 @@ implemented. They are recorded here, with the reason, so the boundary is explici
   (assertion that depends on dict or set ordering). Each looks identical to a valid
   pattern at the AST level: a real object, an integration test, a deterministic
   collection. The parser cannot tell them apart, so these stay in the LLM semantic pass.
-- **Runtime and culture (the `PL` series).** Not a per-file property. `PL2`, `PL7`, and
+- **Runtime and culture (the `PL` series).** Not a per-file property. `PL1`, `PL2`, `PL7`, and
   `PL8` are covered by `--config-audit` (it reads the project's pytest and coverage
-  config). `PL1` (`python -O` stripping asserts), `PL4` (a collection error counted as
-  zero tests), and `PL3`, `PL5`, `PL6` need execution or pipeline inspection, so they are
-  documented rather than promised.
+  config: `python -O`/`PYTHONOPTIMIZE` stripping asserts, warnings, coverage gate,
+  early-exit addopts). `PL4` (a collection error counted as zero tests), and `PL3`,
+  `PL5`, `PL6` need execution or pipeline inspection, so they are documented rather
+  than promised.
 - **Semantic Family E / F7.** Mocking the unit under test, echoing the value fed to a
   mock, re-implementing the production formula, borrowing state, an expected value that
   contradicts the spec. Structure cannot prove intent. `C14` is the only codable corner;

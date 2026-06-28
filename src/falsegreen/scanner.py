@@ -42,6 +42,7 @@ import xml.etree.ElementTree as ET
 
 __version__ = "0.6.0"  # keep in lockstep with pyproject.toml (test_version_lockstep enforces it)
 TOOL_URI = "https://github.com/vinicq/falsegreen"
+DOCS_CATALOG_URI = "https://vinicq.github.io/falsegreen-docs/catalog/python/"
 
 try:
     import tomllib as _toml  # Python 3.11+
@@ -128,6 +129,7 @@ CASES = {
     # --- project layer (config-audit only; emitted by --config-audit, never by
     #     the per-file scan). The suite goes green by configuration, not by a
     #     smell inside any one test file. ---------------------------------------
+    "PL1": ("python -O / PYTHONOPTIMIZE strips every assert at runtime - the whole suite passes with no checks", "low", "J1"),
     "PL2": ("filterwarnings does not promote warnings to errors - deprecations and runtime warnings pass silently", "low", "J1"),
     "PL7": ("no coverage gate (--cov-fail-under / fail_under) - coverage can fall to zero and the suite still passes", "low", "J5"),
     "PL8": ("addopts stops the run early (-x / --maxfail / --exitfirst) - the reported test count is incomplete", "low", "J5"),
@@ -203,6 +205,7 @@ FIX_HINTS = {
     "D5":  "extract the repeated setup into a fixture",
     "D6":  "replace print() with an assertion, or remove it",
     "M2":  "split the long test into focused cases",
+    "PL1": "run pytest without -O/-OO and unset PYTHONOPTIMIZE so asserts execute",
     "PL2": "set filterwarnings = error in the pytest config so warnings fail the suite",
     "PL7": "add --cov-fail-under=<N> (or [tool.coverage.report] fail_under) to gate coverage",
     "PL8": "drop -x/--maxfail from addopts so the full suite runs and the count is complete",
@@ -1187,6 +1190,56 @@ def _literal_value(node):
 def _same_literal(left, right):
     return _literal_value(left) == _literal_value(right) \
         and _literal_value(left) is not None
+
+
+def _literal_collection_key(node):
+    """A hashable, value-based key for a fully literal AST node, or None if any
+    part is dynamic (a Name, a call, an f-string, ...). Recurses into list/tuple/
+    set/dict literals so a nested literal argset still normalizes; type is part of
+    the key (so int 1 and float 1.0 do not collide, and (1,) != [1])."""
+    lit = _literal_value(node)
+    if lit is not None or isinstance(node, ast.Constant):
+        return ("lit", type(lit).__name__, lit)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        parts = []
+        for e in node.elts:
+            k = _literal_collection_key(e)
+            if k is None:
+                return None
+            parts.append(k)
+        return (type(node).__name__, tuple(parts))
+    if isinstance(node, ast.Dict):
+        items = []
+        for kk, vv in zip(node.keys, node.values):
+            if kk is None:  # dict unpacking {**x}
+                return None
+            kkey = _literal_collection_key(kk)
+            vkey = _literal_collection_key(vv)
+            if kkey is None or vkey is None:
+                return None
+            items.append((kkey, vkey))
+        return ("Dict", frozenset(items))
+    return None
+
+
+def _parametrize_literal_key(case):
+    """A value key for one @pytest.mark.parametrize case, or None if it is not
+    provably a literal duplicate (so C37 must skip it). Handles a bare value, a
+    tuple/list argset, and a pytest.param(...) wrapper. Returns None when any
+    value is dynamic OR when an id= is present but not a literal string (a dynamic
+    id makes pytest label the cases distinctly, so they are not a duplicate)."""
+    if isinstance(case, ast.Call) and dotted_name(case.func).split(".")[-1] == "param":
+        for kw in case.keywords:
+            if kw.arg == "id" and _literal_value(kw.value) is None:
+                return None  # dynamic id: pytest names the cases apart
+        parts = []
+        for a in case.args:
+            k = _literal_collection_key(a)
+            if k is None:
+                return None
+            parts.append(k)
+        return ("param", tuple(parts))
+    return _literal_collection_key(case)
 
 
 def _slice_value(node):
@@ -2408,17 +2461,23 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                                     "%d cases without ids=" % len(cases_arg.elts)))
 
         # C37: duplicate case in the same @pytest.mark.parametrize call.
-        # ast.dump() gives a canonical string for any AST subtree; if two
-        # elements produce the same dump the argument sets are identical.
+        # Compare every argument set pairwise by literal VALUE (not adjacency,
+        # not ast.dump): two cases collide when their normalized literal values
+        # are equal, wherever they sit in the list. FP guard: only fully literal
+        # sets take part — a set with any Name/call/dynamic value (or a dynamic
+        # pytest.param id) is skipped, since two such cases may resolve to
+        # different runtime values and are not a provable duplicate.
         if isinstance(cases_arg, (ast.List, ast.Tuple)):
-            _seen: dict[str, int] = {}
+            _seen = set()
             for _elt in cases_arg.elts:
-                _key = ast.dump(_elt)
+                _key = _parametrize_literal_key(_elt)
+                if _key is None:
+                    continue  # dynamic case: cannot prove a duplicate, skip it
                 if _key in _seen:
                     findings.append(Finding(file, d.lineno, "C37",
                                             "duplicate parametrize case — same argument set runs the same scenario twice"))
                     break
-                _seen[_key] = 1
+                _seen.add(_key)
 
     # C30: responses.add() / httpretty.register_uri() without activating the library
     # interceptor. Without @responses.activate (or an equivalent context manager), the
@@ -3035,12 +3094,20 @@ def render_sarif(findings):
     rules = []
     for code in codes:
         title, default_conf, judgment = CASES[code]
+        # fullDescription = catalog title + the fix hint (when one exists).
+        full = title + ((". Fix: " + FIX_HINTS[code]) if code in FIX_HINTS else "")
+        # Deep link to the rule on the docs site. The catalog heading slug is
+        # <code-lowercased>-<title-words>, which the CASES title cannot reproduce
+        # reliably (the docs heading text differs), so anchor to the page + the
+        # lowercased code id. This lands on the catalog page, not the exact
+        # heading: an intentional approximation, kept deterministic per rule id.
         rules.append({
             "id": code,
             "name": code,
             "shortDescription": {"text": title},
+            "fullDescription": {"text": full},
             "defaultConfiguration": {"level": _sarif_level(default_conf)},
-            "helpUri": TOOL_URI,
+            "helpUri": DOCS_CATALOG_URI + "#" + code.lower(),
             "properties": {"tags": [judgment]},
         })
     results = []
@@ -3249,6 +3316,24 @@ def _pytest_options(start):
     return None, None
 
 
+_OPTIMIZE_RE = re.compile(r"(?:^|\s)-OO?(?:\s|$)|PYTHONOPTIMIZE\s*=\s*[1-9]")
+
+
+def _config_strips_asserts(path, addopts):
+    """True if the resolved pytest config turns asserts off at runtime: a python
+    -O/-OO flag or PYTHONOPTIMIZE set, in addopts or anywhere in the config file
+    (a tox commands = python -O -m pytest). Reads the single file --config-audit
+    already located, so detection stays scoped to parsed config, not CI YAML."""
+    if _OPTIMIZE_RE.search(addopts or ""):
+        return True
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except Exception:
+        return False
+    return _OPTIMIZE_RE.search(text) is not None
+
+
 def audit_config(start=None):
     """Project-layer audit. Read the pytest/coverage config and report the PL
     codes: ways the suite can report green by configuration. Findings carry the
@@ -3259,6 +3344,12 @@ def audit_config(start=None):
     if not path:
         return findings
     addopts = opts["addopts"] or ""
+    # PL1: python -O / -OO or PYTHONOPTIMIZE anywhere in the resolved config file
+    # strips every assert at runtime, so the suite reports green with no checks.
+    # Scoped to the file --config-audit already parses (a tox commands = python -O
+    # -m pytest, an addopts, or a [pytest]/[tool:pytest] section); CI YAML is out.
+    if _config_strips_asserts(path, addopts):
+        findings.append(Finding(path, 1, "PL1"))
     promotes = any(f.split(":", 1)[0].strip() == "error" for f in opts["filterwarnings"])
     if not promotes:
         findings.append(Finding(path, 1, "PL2"))
