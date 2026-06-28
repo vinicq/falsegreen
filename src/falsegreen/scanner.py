@@ -1456,6 +1456,34 @@ def _c48_toggle_writes(func):
     return writes
 
 
+def _c48_assert_reads_toggle(node, write):
+    """True if `node` (a post-flip assertion) actually *reads the toggled flag
+    itself*, not merely mentions a matching token. Receiver-aware so a same-named
+    attribute on a different object, or the key string used as an unrelated
+    literal, does not count (avoids the leaf-match false positive)."""
+    for tgt in write.targets:
+        if isinstance(tgt, ast.Subscript) and dotted_name(tgt.value) == "os.environ":
+            key = _subscript_str_key(tgt)
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Subscript) and dotted_name(sub.value) == "os.environ" \
+                        and _subscript_str_key(sub) == key:
+                    return True
+                if isinstance(sub, ast.Call) and dotted_name(sub.func) in ("os.environ.get", "os.getenv") \
+                        and sub.args and isinstance(sub.args[0], ast.Constant) \
+                        and sub.args[0].value == key:
+                    return True
+            return False
+        if isinstance(tgt, ast.Attribute):
+            target = dotted_name(tgt)
+            return any(isinstance(sub, ast.Attribute) and dotted_name(sub) == target
+                       for sub in ast.walk(node))
+        if isinstance(tgt, ast.Name):
+            return any(isinstance(sub, ast.Name) and sub.id == tgt.id
+                       and isinstance(sub.ctx, ast.Load)
+                       for sub in ast.walk(node))
+    return False
+
+
 def empty_body(func):
     for stmt in func.body:
         if isinstance(stmt, ast.Pass):
@@ -1866,8 +1894,20 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                 findings.append(Finding(file, n.lineno, "C4",
                                         "nested test function is not collected"))
 
+    # C20 dead-code lines own their statement: an assertion that never runs cannot
+    # be trivial, weak, or self-comparing in any way that matters, so the per-assert
+    # detectors below are suppressed on these lines and C20 alone reports them
+    # (#108, mirroring how C21 owns its conditional asserts and suppresses C1).
+    dead_lines = {
+        stmt.lineno
+        for body in block_bodies(func)
+        for stmt in dead_checks_after_terminator(body)
+    }
+
     for n in children_no_nesting(func):
         if isinstance(n, ast.Assert):
+            if n.lineno in dead_lines:
+                continue
             test = n.test
             if assert_always_true(test):
                 findings.append(Finding(file, n.lineno, "C5"))
@@ -1903,6 +1943,7 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
     for n in children_no_nesting(func):
         if isinstance(n, ast.Expr) and is_xunit_assert_call(n.value) \
                 and n.value.func.attr == "assertIsNone" and n.value.args \
+                and n.lineno not in dead_lines \
                 and _is_none_returning_mutator_call(n.value.args[0],
                                                     builtin_container_names(func, n.lineno)):
             findings.append(Finding(file, n.lineno, "C41",
@@ -1988,9 +2029,8 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
     # (return / raise / break / continue / pytest.fail() / assert False) is dead
     # code, it never runs. Scanned per block body so a terminator in one branch
     # does not orphan a sibling at the parent level.
-    for body in block_bodies(func):
-        for stmt in dead_checks_after_terminator(body):
-            findings.append(Finding(file, stmt.lineno, "C20"))
+    for line_no in sorted(dead_lines):
+        findings.append(Finding(file, line_no, "C20"))
 
     for n in children_no_nesting(func):
         if isinstance(n, ast.Try):
@@ -2146,13 +2186,23 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
     # the product's test-only branch instead of real behaviour. Detection-only;
     # v1 covers RAW writes (os.environ[...]= / settings.TESTING= / global TESTING=).
     c48_lines = set()
-    _assert_lines = [n.lineno for n in _iter_assertion_nodes(func)]
-    if _assert_lines:
+    _assert_nodes = list(_iter_assertion_nodes(func))
+    if _assert_nodes:
         for w in _c48_toggle_writes(func):
-            if any(al > w.lineno for al in _assert_lines):
-                findings.append(Finding(file, w.lineno, "C48",
-                                        "test sets a test-mode flag then asserts — drive real behaviour, not the test-only branch"))
-                c48_lines.add(w.lineno)
+            after = [a for a in _assert_nodes if a.lineno > w.lineno]
+            if not after:
+                continue  # nothing asserted after the flip — not the dark-patch
+            before = any(a.lineno < w.lineno for a in _assert_nodes)
+            checks_toggle = any(_c48_assert_reads_toggle(a, w) for a in after)
+            # A genuine assertion *before* the flip means real behaviour is already
+            # verified; the post-flip asserts are incidental, not a dark-patch (#107).
+            # The exception: a post-flip assertion that inspects the toggled flag
+            # itself IS the dark-patch, so keep flagging that case.
+            if before and not checks_toggle:
+                continue
+            findings.append(Finding(file, w.lineno, "C48",
+                                    "test sets a test-mode flag then asserts — drive real behaviour, not the test-only branch"))
+            c48_lines.add(w.lineno)
 
     # C29: direct os.environ assignment in a test — the mutation outlives the test
     # and contaminates every test that runs after. Use monkeypatch.setenv() which

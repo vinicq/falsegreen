@@ -3075,6 +3075,19 @@ def test_c41_assert_is_none_unittest_form(tmp_path):
     """)
 
 
+def test_c20_dead_assertion_owns_the_line_not_c41(tmp_path):
+    # A None-mutator assertion that sits after a return never runs. C20 (dead code,
+    # HIGH) owns the line; its triviality (C41, LOW) is moot and suppressed (#108).
+    codes = scan_source(tmp_path, """
+        def test_dead():
+            data = [3, 1]
+            return
+            assert data.sort() is None
+    """)
+    assert "C20" in codes
+    assert "C41" not in codes
+
+
 def test_no_c41_for_value_returning_method(tmp_path):
     # pop() returns the removed element — a real value-checking assertion, not a
     # None-mutator false-green.
@@ -3233,6 +3246,54 @@ def test_no_c48_for_local_name_without_global(tmp_path):
         def test_local():
             TESTING = True
             assert TESTING
+    """)
+
+
+def test_no_c48_when_genuine_assertion_runs_before_the_flip(tmp_path):
+    # Real behaviour is asserted before the test-mode write, so the post-flip
+    # asserts are incidental, not a dark-patch (#107).
+    assert "C48" not in scan_source(tmp_path, """
+        import os
+        def test_real_then_flips():
+            assert pre() == 1
+            os.environ["TESTING"] = "1"
+            assert post() == 2
+    """)
+
+
+def test_c48_still_fires_when_post_flip_assert_checks_the_toggle(tmp_path):
+    # Even with a genuine assertion before the flip, a post-flip assertion that
+    # inspects the toggled flag itself IS the dark-patch (#107).
+    assert "C48" in scan_source(tmp_path, """
+        import os
+        def test_checks_flag():
+            assert pre() == 1
+            os.environ["TESTING"] = "1"
+            assert os.environ["TESTING"] == "1"
+    """)
+
+
+def test_no_c48_when_post_assert_only_mentions_key_as_unrelated_literal(tmp_path):
+    # A genuine pre-flip assert, and the post-flip assert merely contains the string
+    # "TESTING" as an unrelated literal — it does NOT read the flag, so not a dark
+    # patch. Guards against a leaf-match that fires on any matching token (#107).
+    assert "C48" not in scan_source(tmp_path, """
+        import os
+        def test_unrelated_literal():
+            assert pre() == 1
+            os.environ["TESTING"] = "1"
+            assert label() == "TESTING"
+    """)
+
+
+def test_no_c48_when_post_assert_reads_same_named_attr_on_other_object(tmp_path):
+    # settings.TESTING is flipped, but the post-flip assert reads other.TESTING — a
+    # different object. Receiver-aware: must NOT fire (#107).
+    assert "C48" not in scan_source(tmp_path, """
+        def test_other_object():
+            assert pre() == 1
+            settings.TESTING = True
+            assert other.TESTING == 5
     """)
 
 
@@ -3522,6 +3583,7 @@ def test_version_lockstep():
     import re
     import pathlib
     from falsegreen.scanner import __version__
+    from falsegreen import __version__ as pkg_version
     root = pathlib.Path(__file__).resolve().parent.parent
 
     def _ver(path, pat):
@@ -3530,6 +3592,6 @@ def test_version_lockstep():
 
     pyproject_v = _ver(root / "pyproject.toml", r'^version\s*=\s*"([^"]+)"')
     cff_v = _ver(root / "CITATION.cff", r'^version:\s*(\S+)')
-    assert __version__ == pyproject_v == cff_v, (
-        "version lockstep broken: __version__=%s pyproject=%s CITATION=%s"
-        % (__version__, pyproject_v, cff_v))
+    assert __version__ == pkg_version == pyproject_v == cff_v, (
+        "version lockstep broken: scanner=%s package=%s pyproject=%s CITATION=%s"
+        % (__version__, pkg_version, pyproject_v, cff_v))

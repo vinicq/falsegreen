@@ -14,6 +14,21 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - C16 no longer flags `requests.get(url, timeout=5)` / `cache.get(k, timeout=5)`: `get` is dropped
   from the concurrency-wait set because it collides with the recommended HTTP/cache form
   (`result`/`join`/`wait`/`wait_for` still flag a fixed concurrency-wait timeout) (#105).
+- C48 no longer fires when a genuine assertion already runs before the test-mode flip
+  (`assert pre(); os.environ["TESTING"]="1"; assert post()`): real behaviour is verified, so
+  the post-flip asserts are incidental. A post-flip assertion that inspects the toggled flag
+  itself still flags (#107).
+- C41 (and the other per-assert LOW detectors) are suppressed on a statement already flagged
+  C20 dead-code: the assertion never runs, so C20 owns the line, mirroring how C21 owns its
+  conditional asserts (#108).
+- `falsegreen.__version__` (the package attribute) was stale at `0.4.0` while
+  `scanner.__version__` / `pyproject` were `0.6.0`; `__init__` now re-exports the single
+  `scanner.__version__` so the two cannot drift, and `test_version_lockstep` checks the
+  package-level value too (closes a gap left by #104).
+
+### Docs
+- ARCHITECTURE.md no longer lists C41 among codes "left out on purpose" — C41 is a live LOW
+  detector (shipped 0.6.0). C40, C46, C47 remain (#109).
 
 ### Tests
 - Precision-lock corpus (`tests/test_precision_corpus.py`): one legitimate look-alike per
