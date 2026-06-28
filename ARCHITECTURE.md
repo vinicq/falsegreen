@@ -72,11 +72,10 @@ The static layer is close to saturated, so a few catalog codes are deliberately 
 implemented. They are recorded here, with the reason, so the boundary is explicit.
 
 - **High false-positive without deeper analysis.** `C40` (assert on a spec-less `Mock`
-  attribute, always truthy), `C41` (assert on an in-place method that returns `None`),
-  `C46` (real network or DB call with no double), and `C47` (assertion that depends on
-  dict or set ordering). Each looks identical to a valid pattern at the AST level: a
-  real object, a typed receiver, an integration test, a deterministic collection. The
-  parser cannot tell them apart, so these stay in the LLM semantic pass.
+  attribute, always truthy), `C46` (real network or DB call with no double), and `C47`
+  (assertion that depends on dict or set ordering). Each looks identical to a valid
+  pattern at the AST level: a real object, an integration test, a deterministic
+  collection. The parser cannot tell them apart, so these stay in the LLM semantic pass.
 - **Runtime and culture (the `PL` series).** Not a per-file property. `PL2`, `PL7`, and
   `PL8` are covered by `--config-audit` (it reads the project's pytest and coverage
   config). `PL1` (`python -O` stripping asserts), `PL4` (a collection error counted as
