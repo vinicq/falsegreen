@@ -1187,6 +1187,15 @@ def c16_call_detail(call, has_seed, controls_time):
     if (target.startswith("random.") or target.endswith("randint")
             or target.endswith("choice") or target.endswith("shuffle")) and not has_seed:
         return "randomness without a fixed seed"
+    # uuid.uuid4()/uuid1()/getnode() and secrets.* produce a fresh value each run
+    # with no seed concept (sibling of the JS crypto.randomUUID/getRandomValues).
+    # Module-qualified only (precision-first): a user method named uuid4() or a bare
+    # `from uuid import uuid4` call is not flagged, mirroring the JS FP-averse stance.
+    if target in ("uuid.uuid4", "uuid.uuid1", "uuid.getnode"):
+        return "uuid is non-deterministic between runs (no seed)"
+    if target.startswith("secrets.") and (
+            last.startswith("token_") or last in ("randbits", "choice")):
+        return "secrets randomness is non-deterministic between runs (no seed)"
     if target.endswith("train_test_split") \
             and not any(kw.arg == "random_state" for kw in call.keywords):
         return "train_test_split without random_state - non-deterministic split"

@@ -2588,6 +2588,65 @@ def test_c16_tf_random_with_set_seed_clean(tmp_path):
     assert "C16" not in {a.code for a in analyze_file(str(f))}
 
 
+# C16 parity with JS crypto.randomUUID/getRandomValues: uuid.* and secrets.*
+
+def test_c16_fires_for_uuid4(tmp_path):
+    assert "C16" in scan_source(tmp_path, """
+        import uuid
+        def test_id():
+            token = uuid.uuid4()
+            assert token in registry
+    """)
+
+
+def test_c16_fires_for_secrets_token_hex(tmp_path):
+    assert "C16" in scan_source(tmp_path, """
+        import secrets
+        def test_token():
+            t = secrets.token_hex(16)
+            assert len(t) == 32
+    """)
+
+
+def test_c16_fires_for_secrets_choice(tmp_path):
+    assert "C16" in scan_source(tmp_path, """
+        import secrets
+        def test_pick():
+            c = secrets.choice(options)
+            assert c in options
+    """)
+
+
+def test_no_c16_for_bare_uuid4_import(tmp_path):
+    # `from uuid import uuid4; uuid4()` is module-unqualified — deferred for precision,
+    # matching the JS FP-averse stance (aliases not chased in v1).
+    assert "C16" not in scan_source(tmp_path, """
+        from uuid import uuid4
+        def test_id():
+            token = uuid4()
+            assert token in registry
+    """)
+
+
+def test_no_c16_for_user_method_named_uuid4(tmp_path):
+    # A user object's .uuid4() is not the stdlib module function — no leaf-match.
+    assert "C16" not in scan_source(tmp_path, """
+        def test_gen():
+            token = generator.uuid4()
+            assert token == expected
+    """)
+
+
+def test_no_c16_for_deterministic_uuid5(tmp_path):
+    # uuid5 is namespace-deterministic, so it is reproducible — not C16.
+    assert "C16" not in scan_source(tmp_path, """
+        import uuid
+        def test_ns():
+            token = uuid.uuid5(uuid.NAMESPACE_DNS, "example.com")
+            assert token == expected
+    """)
+
+
 # ---------------------------------------------------------------------------
 # C36: pytest.fail() without a reason
 # ---------------------------------------------------------------------------

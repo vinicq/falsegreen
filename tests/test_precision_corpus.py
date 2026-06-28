@@ -27,11 +27,14 @@ def _scan(tmp_path, code):
 # correctly-recognized non-test) that sits close to the pattern the HIGH code flags,
 # yet must stay quiet because it actually protects something / is collected / runs.
 CLEAN_LOOKALIKES = {
-    # C2 fires on an empty body. A test with a real assertion is the clean case.
-    "C2": """
-        def test_has_real_check():
+    # C2 fires on an empty body (only a docstring/pass). A body that is a docstring
+    # PLUS one real statement sits one token from empty and must stay clean — a
+    # too-broad empty_body that skipped the assertion would fire here.
+    "C2": '''
+        def test_docstring_then_check():
+            """Exercises the happy path."""
             assert compute() == 5
-    """,
+    ''',
     # C3 fires when an except swallows the asserted error. Here the except re-raises
     # via pytest.fail and there is a real assertion after the block.
     "C3": """
@@ -52,10 +55,12 @@ CLEAN_LOOKALIKES = {
         def test_health_route():
             return {"ok": True}
     """,
-    # C5 fires on an always-true check. A parenthesized real comparison is not C5.
+    # C5 fires on a constant-truthy check, including `X or <truthy-const>`. A boolean
+    # OR of two real calls reaches the same BoolOp(Or) branch but has no constant
+    # operand, so it must stay clean — one token from `assert is_ready() or True`.
     "C5": """
-        def test_parenthesized_comparison():
-            assert (compute() == 5)
+        def test_or_of_two_calls():
+            assert is_ready() or has_fallback()
     """,
     # C7 fires on a value compared to itself. Two separately constructed equal
     # instances (a deliberate __eq__ test) are different expressions, not self-compare.
@@ -82,11 +87,13 @@ CLEAN_LOOKALIKES = {
                 pytest.skip("fancylib not installed")
             assert fancylib.run() == 1
     """,
-    # C20 fires on an assertion after a terminator. The assertion before the return runs.
+    # C20 fires on an assertion after a terminator (return/raise/pytest.fail). An
+    # arbitrary obj.fail() is NOT a terminator, so the assertion after logger.fail()
+    # runs — locks the #103 fix (one token from the `pytest.fail()` dead-code case).
     "C20": """
-        def test_assert_before_return():
-            assert compute() == 1
-            return
+        def test_logs_then_asserts():
+            logger.fail("transient")
+            assert run() == 1
     """,
     # C27 fires on try/except/pass used instead of pytest.raises. The proper form is clean.
     "C27": """
@@ -95,33 +102,42 @@ CLEAN_LOOKALIKES = {
             with pytest.raises(ValueError):
                 risky()
     """,
-    # C38 fires when two test functions share a name. Two distinct names are clean.
+    # C38 fires when two test functions share an identical name. Two names that share
+    # a prefix but differ are clean — a too-broad prefix/fuzzy match would fire here.
     "C38": """
-        def test_alpha():
-            assert a() == 1
-        def test_beta():
-            assert b() == 2
+        def test_user_create():
+            assert create() == 1
+        def test_user_update():
+            assert update() == 2
     """,
-    # C39 fires when a test returns a comparison instead of asserting it. Asserting is clean.
+    # C39 fires when a test RETURNS a comparison (`return x == y`). A test that
+    # asserts and then returns a non-comparison value reaches the same return branch
+    # but is clean — a too-broad "any return" check would fire here.
     "C39": """
-        def test_asserts_the_result():
-            assert compute() == 1
+        def test_asserts_then_returns_value():
+            result = compute()
+            assert result == 1
+            return result
     """,
-    # C42 fires on an assertion on a bare generator/lambda (always truthy). Wrapping the
-    # generator in all() is a real check, not the always-truthy object.
+    # C42 fires on a bare generator expression / lambda (always truthy). A LIST
+    # comprehension is explicitly excluded (it can be empty), so it reaches the same
+    # discrimination and stays clean — one bracket from the genexp that WOULD fire.
     "C42": """
-        def test_all_over_generator():
-            assert all(x > 0 for x in items())
+        def test_list_comprehension_not_genexp():
+            assert [x for x in items() if x > 0]
     """,
-    # C44 fires on a numeric tautology (len(x) >= 0). An exact count is a real check.
+    # C44 fires on a numeric tautology (len(x) >= 0, always true). `len(x) > 1`
+    # reaches the same len()-comparison branch but can be false, so it must stay
+    # clean — one token from the `>= 0` tautology.
     "C44": """
-        def test_exact_length():
-            assert len(result()) == 3
+        def test_length_strictly_greater():
+            assert len(result()) > 1
     """,
-    # C45 fires on an empty parametrize list. A list with cases is clean.
+    # C45 fires on an empty parametrize list (generates zero cases). A single-element
+    # list reaches the same length check and is clean — one token from the empty `[]`.
     "C45": """
         import pytest
-        @pytest.mark.parametrize("a", [1, 2, 3])
+        @pytest.mark.parametrize("a", [1])
         def test_parametrized(a):
             assert a > 0
     """,

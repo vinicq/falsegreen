@@ -36,6 +36,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   silently. Pins the two historical false positives (C7 on a deliberate `__eq__` test, C4 on
   a route handler named `test_*`) plus a clean case for every other HIGH code, with a guard
   that fails if a new HIGH code lands without an entry (#88).
+- Hardened the corpus so each clean look-alike sits one token from the BAD pattern and
+  traverses the same detector branch (C2 docstring+assert, C5 boolean `or` of two calls,
+  C20 `logger.fail()`, C38 shared-prefix names, C39 `return value`, C42 list comprehension
+  vs genexp, C44 `len(x) > 1`, C45 single-element parametrize). A too-broad detector now
+  actually fires on these, so the lock catches an over-detection regression (#106).
 
 ### Added
 - `C48` (dark patch): a test that forces a known test-mode flag into test mode and then
@@ -44,6 +49,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `settings.TESTING = True`, a `global`-declared `TESTING = True`). Config values and
   product feature flags are not flagged, and `C48` suppresses the `C29` env-leak report on
   the same line. New id, not `C46`/`C47`, which stay reserved for their cataloged concepts (#78).
+- `C16` now flags `uuid.uuid4()`/`uuid1()`/`getnode()` and `secrets.token_*`/`randbits`/`choice`
+  as non-deterministic randomness (no seed concept), the Python sibling of the JS
+  `crypto.randomUUID()`/`getRandomValues()` broadening. Module-qualified only: a bare
+  `from uuid import uuid4` call, a user object's `.uuid4()`, and the deterministic `uuid5()`
+  are not flagged (precision-first, matching the JS FP-averse stance) (#110).
 
 ### Fixed
 - `C41` collects container evidence with `children_no_nesting`, so a list/dict/set literal
