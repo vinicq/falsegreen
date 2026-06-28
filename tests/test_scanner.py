@@ -40,6 +40,55 @@ def test_flags_empty_test(tmp_path):
     """)
 
 
+def test_c2c_empty_subtest_block(tmp_path):
+    # A self.subTest(...) that wraps work but asserts nothing is the subTest analogue
+    # of an empty test. C2c owns it (more specific than the generic C2b).
+    codes = scan_source(tmp_path, """
+        import unittest
+        class T(unittest.TestCase):
+            def test_x(self):
+                for i in [1, 2]:
+                    with self.subTest(i=i):
+                        do_thing(i)
+    """)
+    assert "C2c" in codes
+    assert "C2b" not in codes
+
+
+def test_no_c2c_when_subtest_asserts(tmp_path):
+    assert "C2c" not in scan_source(tmp_path, """
+        import unittest
+        class T(unittest.TestCase):
+            def test_x(self):
+                for i in [1, 2]:
+                    with self.subTest(i=i):
+                        self.assertEqual(f(i), i)
+    """)
+
+
+def test_c2c_does_not_fire_when_a_verification_helper_is_called_in_subtest(tmp_path):
+    # A subTest that delegates to a check_*/verify_* helper is exempt (mirrors C2b).
+    codes = scan_source(tmp_path, """
+        import unittest
+        class T(unittest.TestCase):
+            def test_x(self):
+                with self.subTest():
+                    check_invariant(state)
+    """)
+    assert "C2c" not in codes
+
+
+def test_no_c2c_on_a_non_unittest_subtest_method(tmp_path):
+    # An arbitrary object's .subTest() is not unittest's: receiver-anchored to self/cls,
+    # so this must NOT fire C2c (guards against a leaf-match false positive).
+    assert "C2c" not in scan_source(tmp_path, """
+        def test_x():
+            ctx = make_ctx()
+            with ctx.subTest():
+                ctx.run()
+    """)
+
+
 def test_hypothesis_given_is_not_empty(tmp_path):
     # a @given body with no explicit assert is idiomatic: the oracle is
     # "no exception over all generated inputs", so it is neither C2 nor C2b.
@@ -370,6 +419,50 @@ def test_fractional_float_is_still_c8(tmp_path):
     assert "C8" in scan_source(tmp_path, """
         def test_x():
             assert ratio() == 0.1
+    """)
+
+
+# --- C8b: approximate equality with no explicit tolerance -------------------
+
+def test_c8b_assert_almost_equal_without_tolerance(tmp_path):
+    assert "C8b" in scan_source(tmp_path, """
+        import unittest
+        class T(unittest.TestCase):
+            def test_x(self):
+                self.assertAlmostEqual(total(), 4.2)
+    """)
+
+
+def test_no_c8b_assert_almost_equal_with_places(tmp_path):
+    assert "C8b" not in scan_source(tmp_path, """
+        import unittest
+        class T(unittest.TestCase):
+            def test_x(self):
+                self.assertAlmostEqual(total(), 4.2, places=2)
+    """)
+
+
+def test_no_c8b_assert_almost_equal_with_positional_places(tmp_path):
+    # places is the 3rd positional arg; supplying it sizes the tolerance.
+    assert "C8b" not in scan_source(tmp_path, """
+        import unittest
+        class T(unittest.TestCase):
+            def test_x(self):
+                self.assertAlmostEqual(total(), 4.2, 2)
+    """)
+
+
+def test_c8b_eq_pytest_approx_without_tolerance(tmp_path):
+    assert "C8b" in scan_source(tmp_path, """
+        def test_x():
+            assert total() == pytest.approx(4.2)
+    """)
+
+
+def test_no_c8b_pytest_approx_with_rel(tmp_path):
+    assert "C8b" not in scan_source(tmp_path, """
+        def test_x():
+            assert total() == pytest.approx(4.2, rel=1e-3)
     """)
 
 

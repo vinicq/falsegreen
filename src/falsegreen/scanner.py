@@ -71,6 +71,7 @@ CASES = {
     "C1":  ("assert inside if/for that may never run", "low", "J1"),
     "C2":  ("test with no check at all (empty body)", "high", "J1"),
     "C2b": ("test calls things but checks nothing", "low", "J1"),
+    "C2c": ("self.subTest(...) block wraps work but asserts nothing (the subTest analogue of an empty test)", "low", "J1"),
     "C3":  ("assert inside try whose except swallows the error", "high", "J1"),
     "C4":  ("test is not collected by pytest (silently never runs)", "high", "J1"),
     "C4b": ("test class has __init__ (not collected unless subclassed)", "low", "J1"),
@@ -80,6 +81,7 @@ CASES = {
     "C6c": ("asserts a mock's call_count truthiness — only that it was called, not how many times", "low", "J4"),
     "C7":  ("compares a thing to itself (always matches)", "high", "J2"),
     "C8":  ("exact equality on a float (fails on rounding, not bugs)", "low", "J4"),
+    "C8b": ("approximate-equality with no explicit tolerance (default places/rel hides a wrong value)", "low", "J4"),
     "C9":  ("pytest.raises too broad (accepts any error)", "low", "J4"),
     "C11a":("self-confirming literal assigned by the test itself", "low", "J2"),
     "C13": ("mock assertion misspelled / not called (always passes)", "high", "J3"),
@@ -149,6 +151,7 @@ FIX_HINTS = {
     "C1":  "move the assertion out of the conditional so it always runs",
     "C2":  "add an assertion that checks the behaviour under test",
     "C2b": "assert the result of the call, not just that it ran",
+    "C2c": "put an assertion inside the subTest block so each sub-case verifies something",
     "C3":  "narrow or remove the except so the assertion error propagates",
     "C4":  "rename to test_* (or register it) so pytest collects it",
     "C4b": "drop __init__ from the test class; use fixtures for setup",
@@ -158,6 +161,7 @@ FIX_HINTS = {
     "C6c": "assert the expected call_count (== N), not just its truthiness",
     "C7":  "compare against an independent expected value, not the subject itself",
     "C8":  "use pytest.approx() or a tolerance instead of exact float equality",
+    "C8b": "pass an explicit tolerance (places=/delta=, or rel=/abs= on approx) sized to the values",
     "C9":  "match the specific exception type, not a broad base class",
     "C11a":"compare against an oracle the test does not compute itself",
     "C13": "use a real mock assertion (assert_called_once_with, ...)",
@@ -724,6 +728,41 @@ def is_xunit_assert_call(node):
 
 def is_xunit_raises_call(node):
     return is_xunit_assert_call(node) and node.func.attr in XUNIT_ASSERT_RAISES
+
+
+def almost_equal_without_tolerance(call):
+    """xunit `self.assertAlmostEqual`/`assertNotAlmostEqual` with no explicit tolerance
+    (C8b). places= defaults to 7 and hides a meaningfully wrong value. places can be the
+    3rd positional arg, so a call with >= 3 args already sized it; otherwise require a
+    places=/delta= keyword."""
+    if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)):
+        return False
+    if call.func.attr not in ("assertAlmostEqual", "assertNotAlmostEqual"):
+        return False
+    if not (isinstance(call.func.value, ast.Name) and call.func.value.id in ("self", "cls")):
+        return False
+    if len(call.args) >= 3:
+        return False  # places supplied positionally
+    return not any(kw.arg in ("places", "delta") for kw in call.keywords)
+
+
+def approx_without_tolerance(node):
+    """A `pytest.approx(...)` / `approx(...)` call with no rel=/abs= keyword (C8b):
+    the 1e-6 relative default lets a meaningfully wrong value pass."""
+    if not isinstance(node, ast.Call):
+        return False
+    if dotted_name(node.func) not in ("pytest.approx", "approx"):
+        return False
+    return not any(kw.arg in ("rel", "abs") for kw in node.keywords)
+
+
+def compare_has_untolerated_approx(test):
+    """An `== pytest.approx(x)` / `!= approx(x)` comparison with no tolerance (C8b)."""
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1):
+        return False
+    if not isinstance(test.ops[0], (ast.Eq, ast.NotEq)):
+        return False
+    return approx_without_tolerance(test.left) or approx_without_tolerance(test.comparators[0])
 
 
 def constant_truthy(node):
@@ -1822,6 +1861,48 @@ def takes_callback_args(func):
     return bool(n_pos or args.vararg or args.kwarg or args.kwonlyargs)
 
 
+def _subtest_verifies(node):
+    """True if a `with self.subTest(...)` body verifies something, raises, or delegates
+    to a verification helper — the C2c exemptions. Walks the whole block (a check may be
+    nested in an inner if/for). HELPER_PREFIXES delegate-exemption mirrors C2b."""
+    for sub in ast.walk(node):
+        if isinstance(sub, (ast.Assert, ast.Raise)):
+            return True
+        if isinstance(sub, ast.Attribute) and sub.attr == "should":
+            return True
+        if isinstance(sub, ast.Call):
+            t = dotted_name(sub.func)
+            last = t.split(".")[-1]
+            if last in MOCK_ASSERTS_VALID or last.startswith("assert") \
+                    or t.endswith("raises") or last == "fail" \
+                    or last in FLUENT_ASSERT_CALLS or last.startswith(HELPER_PREFIXES):
+                return True
+            if is_xunit_assert_call(sub):
+                return True
+    return False
+
+
+def _is_subtest_ctx(expr):
+    """A `self.subTest(...)` / `cls.subTest(...)` context expression. Receiver-anchored
+    to self/cls (like is_xunit_assert_call) so an unrelated `obj.subTest()` is not a
+    false positive."""
+    return isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) \
+        and expr.func.attr == "subTest" \
+        and isinstance(expr.func.value, ast.Name) and expr.func.value.id in ("self", "cls")
+
+
+def has_empty_subtest(func):
+    """A `with self.subTest(...)` block whose body asserts nothing (C2c). The subTest
+    is the unittest analogue of an empty test: each generated sub-case runs but verifies
+    nothing. Only meaningful when the method has no assertion (caller guarantees that),
+    so a subTest with a real check elsewhere is not the target."""
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.With) and any(_is_subtest_ctx(item.context_expr) for item in n.items):
+            if not _subtest_verifies(n):
+                return True
+    return False
+
+
 def has_direct_check(func):
     """An assertion (or pytest.raises) directly in this function's own body,
     not buried in a deeper nested def. A genuine forgotten test asserts in its
@@ -1923,6 +2004,11 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
     if not has_assertion(func) and not body_intentionally_empty:
         if empty_body(func):
             findings.append(Finding(file, line, "C2"))
+        elif has_empty_subtest(func):
+            # More specific than C2b: the calls are wrapped in a self.subTest(...) that
+            # asserts nothing. C2c owns this shape so it does not double-report as C2b.
+            findings.append(Finding(file, line, "C2c",
+                                    "a self.subTest(...) block wraps work but asserts nothing"))
         elif makes_any_call(func):
             findings.append(Finding(file, line, "C2b",
                                     "if the check lives in a helper called here, ignore"))
@@ -1972,6 +2058,9 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             else:
                 if assert_exact_float(test):
                     findings.append(Finding(file, n.lineno, "C8"))
+                if compare_has_untolerated_approx(test):
+                    findings.append(Finding(file, n.lineno, "C8b",
+                                            "pytest.approx() with no rel=/abs= uses the 1e-6 default"))
                 if assert_sensitive_equality(test):
                     findings.append(Finding(file, n.lineno, "C18"))
                 weak = assert_weak(test, ctx)
@@ -1995,6 +2084,14 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             findings.append(Finding(file, n.lineno, "C41",
                                     "an in-place mutator (sort/append/...) returns None — "
                                     "assert the resulting state instead"))
+
+    # C8b (xunit form): self.assertAlmostEqual / assertNotAlmostEqual with no explicit
+    # tolerance. The default places=7 lets a meaningfully wrong value pass.
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Expr) and almost_equal_without_tolerance(n.value) \
+                and n.lineno not in dead_lines:
+            findings.append(Finding(file, n.lineno, "C8b",
+                                    "assertAlmostEqual with no places=/delta= uses the default 7 places"))
 
     # C6b: assertion subscripts a mock call-args list by a computed/index-derived
     # position rather than by a stable name — the check breaks if the argument
