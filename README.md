@@ -16,7 +16,14 @@ The scanner is a zero-dependency AST pass. It validates each test against 47 act
 
 The checks are grounded in the rotten-green-test research (Soares 2023; Delplanque et al., ICSE 2019) and cross-walked against the published test-smell catalog. See [CREDITS.md](CREDITS.md).
 
-**The falsegreen family:** **falsegreen** (Python/pytest) · [falsegreen-js](https://github.com/vinicq/falsegreen-js) (JS/TS) · [robotframework-falsegreen](https://github.com/vinicq/robotframework-falsegreen) (Robot Framework) · [falsegreen-skill](https://github.com/vinicq/falsegreen-skill) (semantic LLM pass).
+**The falsegreen family** (install the one for your stack):
+
+| Tool | Stack | Install | Package |
+|---|---|---|---|
+| **falsegreen** | Python / pytest | `pip install falsegreen` | [PyPI](https://pypi.org/project/falsegreen/) |
+| [falsegreen-js](https://github.com/vinicq/falsegreen-js) | JS / TS | `npm i -D falsegreen-js` (`npx falsegreen-js`) | [npm](https://www.npmjs.com/package/falsegreen-js) |
+| [robotframework-falsegreen](https://github.com/vinicq/robotframework-falsegreen) | Robot Framework | `pip install robotframework-falsegreen` | [PyPI](https://pypi.org/project/robotframework-falsegreen/) |
+| [falsegreen-skill](https://github.com/vinicq/falsegreen-skill) | semantic LLM pass | `npx falsegreen-skill analyze <path>` | [npm](https://www.npmjs.com/package/falsegreen-skill) |
 
 > **Install:** `pip install falsegreen`. Pre-commit hook also available (see below). LLM semantic pass: [falsegreen-skill](https://github.com/vinicq/falsegreen-skill).
 
