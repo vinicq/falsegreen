@@ -29,6 +29,99 @@ The checks are grounded in the rotten-green-test research (Soares 2023; Delplanq
 
 ---
 
+## Quick guide for first-time users
+
+If you have never run this tool, start here. The five sections below take you from zero to a CI gate. The deeper reference (every code, the methodology, the research) follows after.
+
+### What it does
+
+falsegreen reads your pytest tests and finds the ones that pass green without checking anything. A test can call your code, run, and report success while asserting nothing real, so a bug ships and the green bar lies about it. The tool reads the test files only (it never runs them) and points at the spots a parser can prove are empty, always true, unreachable, or self-confirming.
+
+A test it flags, and the fix:
+
+```python
+# BAD: runs the code, then asserts a constant. It can never fail.
+def test_add():
+    result = add(2, 3)
+    assert True
+
+# CLEAN: asserts the actual result. Breaks if add() breaks.
+def test_add():
+    assert add(2, 3) == 5
+```
+
+### Install
+
+```bash
+pip install falsegreen
+```
+
+Needs Python 3.8 or newer. No third-party runtime dependencies. To run it once without installing anything: `uvx falsegreen tests/` or `pipx run falsegreen tests/`.
+
+### Quick start
+
+Point it at your test folder:
+
+```bash
+falsegreen tests/
+```
+
+Run on the `test_add` example above and you get:
+
+```
+HIGH confidence (almost certainly a false positive)
+---------------------------------------------------
+  test_demo.py:9  [C5] always-true check (assert True / tuple / or True)
+      level: unit   fix: assert the real behaviour, not a constant or tautology
+
+Summary: 1 high, 0 low.
+By level: unit:1
+Top fixes:
+  C5 (1): assert the real behaviour, not a constant or tautology
+```
+
+How to read that finding:
+
+- `test_demo.py:9` - the file and line.
+- `[C5]` - the code. C5 is "always-true check". The catalog (below) explains every code.
+- `level: unit` - which level of the test pyramid this file sits at.
+- `fix:` - the one-line hint. Here: assert the real behaviour, not a constant.
+
+`python -m falsegreen tests/` does the same thing if the `falsegreen` command is not on your PATH.
+
+### Common options
+
+```bash
+falsegreen tests/ --json          # machine-readable JSON instead of text
+falsegreen tests/ --format sarif  # text (default) | json | sarif | junit
+falsegreen tests/ --disable C6,C8 # turn specific codes off
+falsegreen tests/ --summary       # one line "N scanned, M flagged" to stderr
+```
+
+Exit codes wire it into CI: `0` clean, `10` low-confidence findings only, `20` at least one high-confidence finding. Block the build on `20`.
+
+GitHub Actions:
+
+```yaml
+name: falsegreen
+on: [push, pull_request]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.x" }
+      - run: pip install falsegreen
+      - run: falsegreen tests/   # exit 20 fails the job
+```
+
+### What the codes mean
+
+Each finding carries a code (`C5`, `C2b`, `C7`...) and a confidence. HIGH codes are near-certain and block the commit; LOW codes warn and want a human look. The code names the pattern: `C2b` is "ran but checked nothing", `C5` is "always true", `C7` is "compares a value to itself". The full list, with a BAD and CLEAN example for each, is in [`docs/guide.md`](docs/guide.md) and the [online docs](https://vinicq.github.io/falsegreen-docs/). The [What it detects](#what-it-detects) table below is the quick reference.
+
+---
+
 ## Table of contents
 
 - [Why this exists](#why-this-exists)
