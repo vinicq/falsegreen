@@ -4076,3 +4076,170 @@ def test_c55_both_children_of_one_mock_fires(tmp_path):
         def test_cmp(mock_client):
             assert mock_client.foo == mock_client.bar
     """)
+
+
+# --- #130 field-validation precision fixes --------------------------------
+# Five confirmed false-positives surfaced by running the scanner on real-world
+# suites. Each pair keeps the BAD case firing and takes the CLEAN look-alike quiet.
+
+def test_c21_fluent_chain_conditional_still_fires(tmp_path):
+    # FP-1 BAD: the only oracle is a fluent chain inside an if, so on a false
+    # branch nothing is verified. C21 must still fire.
+    codes = scan_source(tmp_path, """
+        def test_x(p, cond):
+            p.goto('/x')
+            if cond:
+                assert_that(x).is_equal_to(y)
+    """)
+    assert "C21" in codes
+
+
+def test_c21_unconditional_fluent_chain_is_quiet(tmp_path):
+    # FP-1 CLEAN: an unconditional assertpy chain runs on every path. The entry
+    # token sits at the chain root, so the unconditional-pass helpers must see it.
+    codes = scan_source(tmp_path, """
+        def test_x(p):
+            p.goto('/x')
+            assert_that(get_text(p)).is_equal_to('ok')
+    """)
+    assert "C21" not in codes
+
+
+def test_c21_unconditional_expect_chain_is_quiet(tmp_path):
+    # FP-1 CLEAN: a Playwright-style expect chain as the sole statement.
+    codes = scan_source(tmp_path, """
+        def test_x(page):
+            expect(page.get_by_test_id('t')).to_have_text('ok')
+    """)
+    assert "C21" not in codes
+
+
+def test_c16_time_sleep_still_fires(tmp_path):
+    # FP-2 BAD: a real blocking delay via time.sleep is a flaky timing dependency.
+    assert "C16" in scan_source(tmp_path, """
+        import time
+        def test_x():
+            time.sleep(2)
+            assert run() == 1
+    """)
+
+
+def test_c16_page_object_sleep_is_quiet(tmp_path):
+    # FP-2 CLEAN: a page-object method that happens to be named sleep is not a
+    # fixed test delay. No bare leaf-match on the method name (L1).
+    assert "C16" not in scan_source(tmp_path, """
+        def test_x(op):
+            op.sleep(3)
+            assert run() == 1
+    """)
+
+
+def test_c16_coroutine_sleep_is_quiet(tmp_path):
+    # FP-2 CLEAN: a yielded gen.sleep(0) is a scheduler hop, not a wall-clock wait.
+    assert "C16" not in scan_source(tmp_path, """
+        def test_x(gen):
+            yield gen.sleep(0)
+            assert run() == 1
+    """)
+
+
+def test_c16_random_under_equality_still_fires(tmp_path):
+    # FP-3 BAD: a random value flowing into an equality check is non-deterministic.
+    assert "C16" in scan_source(tmp_path, """
+        import random
+        def test_x():
+            x = random.random()
+            assert compute(x) == 0.5
+    """)
+
+
+def test_c16_random_nonce_membership_is_quiet(tmp_path):
+    # FP-3 CLEAN: a stringified random value used only as a unique nonce and read
+    # back by membership is deterministic-enough. No C16.
+    assert "C16" not in scan_source(tmp_path, """
+        import random
+        def test_x(log):
+            r = str(random.random())
+            do(r)
+            assert r in log
+    """)
+
+
+def test_c2b_plain_test_function_still_fires(tmp_path):
+    # FP-4 BAD: a collected test that calls but verifies nothing.
+    assert "C2b" in scan_source(tmp_path, """
+        def test_x():
+            foo()
+    """)
+
+
+def test_fixture_named_test_is_quiet(tmp_path):
+    # FP-4 CLEAN: a pytest fixture named test_server is not collected as a test,
+    # so its yield-only body is not a rotten-green test. No C2b nor empty/weak codes.
+    codes = scan_source(tmp_path, """
+        import pytest
+        @pytest.fixture
+        def test_server():
+            yield Server()
+    """)
+    assert codes == set()
+
+
+def test_pytest_check_soft_assert_is_quiet(tmp_path):
+    # FP-5 CLEAN: pytest_check soft asserts are real oracles. A body whose only
+    # verification is a check entry point is neither empty nor unconditional-free.
+    codes = scan_source(tmp_path, """
+        def test_x(a, b):
+            check.equal(a, b)
+    """)
+    assert "C2b" not in codes
+    assert "C21" not in codes
+
+
+# --- #130 follow-up: tighten pytest_check recognition and async sleeps -------
+
+def test_c2b_check_run_local_object_still_fires(tmp_path):
+    # Discriminator for the check.equal CLEAN case: a local object named check that
+    # calls an arbitrary method is not a soft assert, so the test still verifies
+    # nothing. One token from the recognized check.equal entry point.
+    assert "C2b" in scan_source(tmp_path, """
+        def test_x(payload):
+            check = make_validator()
+            check.run(payload)
+    """)
+
+
+def test_c2b_bare_check_call_still_fires(tmp_path):
+    # A bare check(thing) is not a pytest_check soft assert either.
+    assert "C2b" in scan_source(tmp_path, """
+        def test_x(thing):
+            check(thing)
+    """)
+
+
+def test_c2b_check_unknown_member_still_fires(tmp_path):
+    # check.<member> is only an oracle for known soft-assert members.
+    assert "C2b" in scan_source(tmp_path, """
+        def test_x(x):
+            check.frobnicate(x)
+    """)
+
+
+def test_c16_anyio_sleep_still_fires(tmp_path):
+    # anyio.sleep blocks real wall-clock time, same flakiness class as asyncio.sleep.
+    assert "C16" in scan_source(tmp_path, """
+        import anyio
+        async def test_x():
+            await anyio.sleep(1)
+            assert run() == 1
+    """)
+
+
+def test_c16_trio_sleep_still_fires(tmp_path):
+    # trio.sleep is the same blocking wait.
+    assert "C16" in scan_source(tmp_path, """
+        import trio
+        async def test_x():
+            await trio.sleep(1)
+            assert run() == 1
+    """)

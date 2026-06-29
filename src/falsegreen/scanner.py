@@ -40,7 +40,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
-__version__ = "0.8.0"  # keep in lockstep with pyproject.toml (test_version_lockstep enforces it)
+__version__ = "0.8.1"  # keep in lockstep with pyproject.toml (test_version_lockstep enforces it)
 TOOL_URI = "https://github.com/vinicq/falsegreen"
 DOCS_CATALOG_URI = "https://vinicq.github.io/falsegreen-docs/catalog/python/"
 
@@ -240,6 +240,16 @@ XUNIT_ASSERTS_VALID = {
     "assertRegex", "assertNotRegex", "assertRaises", "assertRaisesRegex",
     "assertRaisesRegexp",
 }
+# pytest_check soft-assert API: check.equal(...), check.is_true(...), etc. The dotted
+# form check.<member> is required (mirrors MOCK_ASSERTS_VALID / XUNIT_ASSERTS_VALID).
+# A local object named check calling an arbitrary method (check.run/frobnicate) or a
+# bare check(thing) is NOT an oracle and must not be recognized (no L1 over-match).
+PYTEST_CHECK_ASSERTS = frozenset({
+    "equal", "not_equal", "is_true", "is_false", "is_none", "is_not_none",
+    "is_in", "is_not_in", "is_instance", "is_not_instance", "greater",
+    "greater_equal", "less", "less_equal", "almost_equal", "not_almost_equal",
+    "between", "raises", "fail",
+})
 # Names that look like a mock assertion but do not exist (always pass).
 MOCK_FALSE_NAMES = {
     "called_once", "called_once_with", "called_with",
@@ -741,6 +751,51 @@ def is_xunit_assert_call(node):
 
 def is_xunit_raises_call(node):
     return is_xunit_assert_call(node) and node.func.attr in XUNIT_ASSERT_RAISES
+
+
+def _chain_root_call(node):
+    """The innermost Call at the head of a fluent chain. For
+    `assert_that(x).is_equal_to(y)` the outer Call is `.is_equal_to(...)`; this
+    returns the `assert_that(x)` Call (the recognized entry point). Walks down the
+    receiver spine through Attribute/Call until the first non-chained Call."""
+    if not isinstance(node, ast.Call):
+        return None
+    cur = node.func
+    while isinstance(cur, ast.Attribute):
+        cur = cur.value
+        if isinstance(cur, ast.Call):
+            inner = _chain_root_call(cur)
+            return inner if inner is not None else cur
+    return node
+
+
+def call_is_recognized_assertion(call):
+    """True if `call` is a recognized verification entry point, whether it is the
+    outermost call or the ROOT of a fluent chain. Single source of truth for the
+    assertion-recognition predicate so the per-statement and whole-function helpers
+    cannot drift (the FP-1 asymmetry). Recognizes: bare assert-prefixed names,
+    mock/xunit asserts, pytest.raises/fail, FLUENT_ASSERT_CALLS (expect), assert_that,
+    and pytest_check soft asserts: the dotted check.<member> form only (check.equal,
+    check.is_true, ...), never a bare check(...) or check.<other>()."""
+    if not isinstance(call, ast.Call):
+        return False
+    for c in (call, _chain_root_call(call)):
+        if c is None:
+            continue
+        target = dotted_name(c.func)
+        last = target.split(".")[-1]
+        if (
+            last in MOCK_ASSERTS_VALID
+            or last.startswith("assert")
+            or target.endswith("raises")
+            or last == "fail"
+            or last in FLUENT_ASSERT_CALLS
+            or (root_name(c) == "check" and last in PYTEST_CHECK_ASSERTS)
+        ):
+            return True
+        if is_xunit_assert_call(c):
+            return True
+    return False
 
 
 def almost_equal_without_tolerance(call):
@@ -1306,10 +1361,15 @@ def assert_arg_order_coupled(test, index_names):
     return False
 
 
-def c16_call_detail(call, has_seed, controls_time):
+def c16_call_detail(call, has_seed, controls_time, nonce_random_calls=()):
     target = dotted_name(call.func)
     last = target.split(".")[-1]
-    if target.endswith("time.sleep") or target.endswith("sleep"):
+    # Anchored to real blocking/wall-clock sleep entry points: time.sleep, the async
+    # sleeps (asyncio/anyio/trio, same flakiness class), and a bare imported sleep
+    # (`from time import sleep`). The excluded case is an arbitrary-receiver obj.sleep():
+    # a page-object op.sleep(3) or a coroutine yield gen.sleep(0) is not a fixed test
+    # delay (L1: no bare leaf-match on "sleep").
+    if target in ("time.sleep", "asyncio.sleep", "anyio.sleep", "trio.sleep", "sleep"):
         return "fixed sleep"
     if not controls_time and (
         target.endswith("datetime.now") or target.endswith("datetime.today")
@@ -1318,7 +1378,11 @@ def c16_call_detail(call, has_seed, controls_time):
         return "reads the system clock"
     if (target.startswith("random.") or target.endswith("randint")
             or target.endswith("choice") or target.endswith("shuffle")) and not has_seed:
-        return "randomness without a fixed seed"
+        # A random.* result stringified into a name that is membership-asserted
+        # (assert nonce in log / .contains(nonce)) reads as a fresh unique id, not a
+        # value to reproduce. Suppress that call regardless of its other uses.
+        if call not in nonce_random_calls:
+            return "randomness without a fixed seed"
     # uuid.uuid4()/uuid1()/getnode() and secrets.* produce a fresh value each run
     # with no seed concept (sibling of the JS crypto.randomUUID/getRandomValues).
     # Module-qualified only (precision-first): a user method named uuid4() or a bare
@@ -1347,6 +1411,46 @@ def c16_call_detail(call, has_seed, controls_time):
     return None
 
 
+def _random_nonce_calls(func):
+    """random.* Call nodes whose result is stringified (str(...) or an f-string), bound
+    to a name, and that name is later asserted via membership (`name in x` or
+    `x.contains(name)` / `.is_in(...)`). Such a value reads as a fresh unique nonce,
+    so the call is suppressed for C16 regardless of its other uses (FP-3)."""
+    # names bound from str(random.*) / f-string wrapping a random.* call -> the call node
+    nonce_names = {}
+    for n in children_no_nesting(func):
+        if not isinstance(n, ast.Assign) or len(n.targets) != 1:
+            continue
+        tgt = n.targets[0]
+        if not isinstance(tgt, ast.Name):
+            continue
+        rand_call = None
+        val = n.value
+        wrapped = (isinstance(val, ast.Call) and dotted_name(val.func) == "str")             or isinstance(val, ast.JoinedStr)
+        if not wrapped:
+            continue
+        for sub in ast.walk(val):
+            if isinstance(sub, ast.Call) and dotted_name(sub.func).startswith("random."):
+                rand_call = sub
+                break
+        if rand_call is not None:
+            nonce_names[tgt.id] = rand_call
+    if not nonce_names:
+        return set()
+    # which of those names are read under a membership/contains assertion
+    asserted_membership = set()
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Compare) and any(
+                isinstance(op, (ast.In, ast.NotIn)) for op in n.ops):
+            if isinstance(n.left, ast.Name) and n.left.id in nonce_names:
+                asserted_membership.add(n.left.id)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)                 and n.func.attr in ("contains", "is_in", "assertIn"):
+            for a in list(n.args) + [a.value for a in n.keywords]:
+                if isinstance(a, ast.Name) and a.id in nonce_names:
+                    asserted_membership.add(a.id)
+    return {nonce_names[name] for name in asserted_membership}
+
+
 def helper_c16_detail(func, controls_time):
     has_seed = any(
         is_call_to(c, "random.seed", "seed", "np.random.seed",
@@ -1354,9 +1458,10 @@ def helper_c16_detail(func, controls_time):
                    "tf.random.set_seed", "set_seed")
         for c in ast.walk(func) if isinstance(c, ast.Call)
     )
+    _nonce = _random_nonce_calls(func)
     for n in children_no_nesting(func):
         if isinstance(n, ast.Call):
-            detail = c16_call_detail(n, has_seed, controls_time)
+            detail = c16_call_detail(n, has_seed, controls_time, _nonce)
             if detail:
                 return detail
     return None
@@ -1520,13 +1625,7 @@ def _iter_assertion_nodes(func):
         elif isinstance(n, ast.Attribute) and n.attr == "should":
             yield n
         elif isinstance(n, ast.Call):
-            target = dotted_name(n.func)
-            last = target.split(".")[-1]
-            if target.endswith("pytest.raises") or target.endswith("raises") \
-                    or target.endswith("pytest.fail") or target.endswith("fail") \
-                    or last in MOCK_ASSERTS_VALID or last.startswith("assert") \
-                    or is_xunit_assert_call(n) \
-                    or last in FLUENT_ASSERT_CALLS:  # expects / ward: expect(x).to(equal(y))
+            if call_is_recognized_assertion(n):  # incl. fluent chains + pytest_check
                 yield n
         elif isinstance(n, ast.With):
             for item in n.items:
@@ -1863,13 +1962,9 @@ def _stmt_is_check(stmt):
         if isinstance(stmt.value, ast.Attribute) and stmt.value.attr == "should":
             return True
         if isinstance(stmt.value, ast.Call):
-            t = dotted_name(stmt.value.func)
-            last = t.split(".")[-1]
-            if last in MOCK_ASSERTS_VALID or last.startswith("assert") \
-                    or t.endswith("raises") or last == "fail" \
-                    or last in FLUENT_ASSERT_CALLS:
-                return True
-            if is_xunit_assert_call(stmt.value):
+            # Recognize fluent chains by their root entry point (assert_that(...).is_*)
+            # and pytest_check soft asserts, matching func_has_any_check (FP-1/FP-5).
+            if call_is_recognized_assertion(stmt.value):
                 return True
     if isinstance(stmt, ast.With):
         for item in stmt.items:
@@ -1965,12 +2060,7 @@ def func_has_any_check(func):
         if isinstance(n, ast.Attribute) and n.attr == "should":
             return True
         if isinstance(n, ast.Call):
-            t = dotted_name(n.func)
-            last = t.split(".")[-1]
-            if last in MOCK_ASSERTS_VALID or last.startswith("assert") \
-                    or t.endswith("raises") or last in FLUENT_ASSERT_CALLS:
-                return True
-            if is_xunit_assert_call(n):
+            if call_is_recognized_assertion(n):
                 return True
         if isinstance(n, ast.With):
             for item in n.items:
@@ -2395,9 +2485,10 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                    "tf.random.set_seed", "set_seed")
         for c in ast.walk(func) if isinstance(c, ast.Call)
     )
+    _c16_nonce = _random_nonce_calls(func)
     for n in children_no_nesting(func):
         if isinstance(n, ast.Call):
-            detail = c16_call_detail(n, _c16_has_seed, controls_time)
+            detail = c16_call_detail(n, _c16_has_seed, controls_time, _c16_nonce)
             if detail:
                 findings.append(Finding(file, n.lineno, "C16", detail))
 
@@ -3037,7 +3128,9 @@ def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
             # (a lint/format fixture like pylint's tests/functional/*.py or black's
             # tests/data/cases/*.py, or a plain helper module) is never run, so its
             # empty/weak body is not a false-green test.
-            if node.name.startswith("test") and collected:
+            # A @pytest.fixture named test_* is not collected as a test (the
+            # has_fixture_decorator guard was only on the C4 branch). FP-4.
+            if node.name.startswith("test") and collected                     and not has_fixture_decorator(node):
                 analyze_function(node, file, findings, file_layer=layer,
                                  controls_time=time_controlled,
                                  long_test_threshold=long_test_threshold,
