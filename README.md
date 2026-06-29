@@ -122,6 +122,272 @@ Each finding carries a code (`C5`, `C2b`, `C7`...) and a confidence. HIGH codes 
 
 ---
 
+## Usage and configuration reference
+
+The quick guide above gets you running. This section is the complete reference: every install channel, every flag, every output format, every config knob, and the CI recipes. All command output shown here is captured from a real run, not invented.
+
+### Install
+
+| Channel | Command | When to use |
+|---|---|---|
+| pip (global or venv) | `pip install falsegreen` | the normal install; adds the `falsegreen` command |
+| pipx (isolated) | `pipx install falsegreen` | keep it off your project's dependency tree |
+| pipx run (no install) | `pipx run falsegreen tests/` | one-off, latest release from PyPI |
+| uvx (no install) | `uvx falsegreen tests/` | one-off via [uv](https://docs.astral.sh/uv/), no environment touched |
+| from source | `pip install -e .` in a clone | hacking on the scanner |
+
+Version floor: **Python 3.8 or newer**. No third-party runtime dependencies, the scanner is a pure `ast` pass. Pin a version in CI with `pip install falsegreen==0.9.0`.
+
+### Invocation
+
+```bash
+falsegreen                          # scan the current directory
+falsegreen tests/                   # scan a folder
+falsegreen tests/test_login.py      # scan a single file
+falsegreen tests/ src/              # scan several paths at once
+falsegreen --staged                 # only the test files staged in git (pre-commit)
+python -m falsegreen tests/         # module form, identical behaviour, no PATH dependency
+```
+
+There is no stdin mode: pass file or directory paths (or nothing, which scans the cwd). Discovery walks the given paths for `test_*.py` / `*_test.py` and `unittest`-style files; non-test files are ignored.
+
+### Output formats
+
+`--format text|json|sarif|junit` selects the shape (default `text`). `--json` is a shorthand for `--format json`. `--output PATH` writes to a file instead of stdout; a directory or trailing-slash path (`.falsegreen/`) receives `report.<ext>`.
+
+Fixture used for every sample below (`test_demo.py`):
+
+```python
+def add(a, b):
+    return a + b
+
+def test_add():
+    result = add(2, 3)
+    assert True            # C5: always-true, line 7
+
+def test_weak():
+    result = add(2, 3)
+    assert result          # C6: weak check, line 12
+```
+
+**text** (default):
+
+```
+HIGH confidence (almost certainly a false positive)
+---------------------------------------------------
+  test_demo.py:7  [C5] always-true check (assert True / tuple / or True)
+      level: unit   fix: assert the real behaviour, not a constant or tautology
+
+LOW confidence (test smell, confirm by hand or with /falsegreen)
+----------------------------------------------------------------
+  test_demo.py:12  [C6] weak check (only verifies that something came back)  (truthiness of a value, not compared to an expected result)
+      level: unit   fix: assert the value, not just that something came back
+
+Summary: 1 high, 1 low.
+By level: unit:2
+Top fixes:
+  C5 (1): assert the real behaviour, not a constant or tautology
+  C6 (1): assert the value, not just that something came back
+```
+
+**json** (`--json` or `--format json`): a flat array, one object per finding.
+
+```json
+[
+  {
+    "file": "test_demo.py",
+    "line": 7,
+    "code": "C5",
+    "confidence": "high",
+    "title": "always-true check (assert True / tuple / or True)",
+    "detail": "",
+    "layer": "logic",
+    "level": "unit",
+    "fix": "assert the real behaviour, not a constant or tautology"
+  },
+  {
+    "file": "test_demo.py",
+    "line": 12,
+    "code": "C6",
+    "confidence": "low",
+    "title": "weak check (only verifies that something came back)",
+    "detail": "truthiness of a value, not compared to an expected result",
+    "layer": "logic",
+    "level": "unit",
+    "fix": "assert the value, not just that something came back"
+  }
+]
+```
+
+**sarif** (`--format sarif`): SARIF 2.1.0 for GitHub code scanning. HIGH maps to `error`, LOW to `warning`, info to `note`; each rule carries a `helpUri` into the online catalog and tags the judgment family. Abridged:
+
+```json
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": { "driver": {
+        "name": "falsegreen",
+        "version": "0.9.0",
+        "rules": [
+          { "id": "C5", "defaultConfiguration": { "level": "error" },
+            "helpUri": "https://vinicq.github.io/falsegreen-docs/catalog/python/#c5",
+            "properties": { "tags": ["J2"] } }
+        ]
+      } },
+      "results": [
+        { "ruleId": "C5", "level": "error",
+          "message": { "text": "always-true check (assert True / tuple / or True)" },
+          "properties": { "tags": ["J2", "layer:logic", "level:unit"] },
+          "locations": [ { "physicalLocation": {
+            "artifactLocation": { "uri": "test_demo.py" },
+            "region": { "startLine": 7 } } } ] }
+      ]
+    }
+  ]
+}
+```
+
+**junit** (`--format junit`): JUnit XML. HIGH becomes a `<failure>`, lower findings become `<skipped>`, so a CI test reporter shows them as a failing suite.
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites name="falsegreen" tests="2" failures="1" skipped="1" errors="0"><testsuite name="falsegreen" tests="2" failures="1" skipped="1" errors="0"><testcase classname="falsegreen.C5" name="C5 test_demo.py:7"><failure message="always-true check (assert True / tuple / or True)">test_demo.py:7</failure></testcase><testcase classname="falsegreen.C6" name="C6 test_demo.py:12"><skipped message="weak check (only verifies that something came back) ..." /></testcase></testsuite></testsuites>
+```
+
+`--summary` prints a one-line tally to **stderr** (independent of `--format`, so you can keep machine output on stdout):
+
+```
+falsegreen: scanned 1 test file(s), 2 finding(s) [1 high, 1 low]  C5:1 C6:1
+  by judgment: J2:1 J4:1
+```
+
+### Configuration
+
+**Exit codes** (the contract CI relies on):
+
+| Code | Meaning |
+|---|---|
+| `0` | clean, or only `info`/baselined findings |
+| `10` | low-confidence findings only |
+| `20` | at least one high-confidence finding |
+
+Block the build on `20`. `10` is a warn band you can choose to fail or not.
+
+**Disable codes:** `--disable C6,C2b` turns codes off for this run. Persist it in config with `disable = [...]` or `severity = { C6 = "off" }`.
+
+**Inline suppression:** a comment on the offending line.
+
+```python
+assert x == x  # falsegreen: ignore        # silence every code on this line
+assert y == y  # falsegreen: ignore[C7]    # silence only C7
+```
+
+Only the `falsegreen:` token suppresses; a plain `# ignore` does not.
+
+**Severity and confidence filtering:** there is no `--severity` flag. You tune severity in config, per code. `severity` values are `high`, `low`, `info`, or `off`. Promoting a code to `high` makes it block (exit 20); demoting to `info` moves it into the DIAGNOSTIC/COUPLING section where it never affects the exit code; `off` is the same as disabling it.
+
+**Config file:** `[tool.falsegreen]` in `pyproject.toml`, or a flat `.falsegreen.toml` at the repo root (`.falsegreen.toml` wins if both exist). Point at an explicit file with `--config PATH`.
+
+```toml
+[tool.falsegreen]
+disable = ["C13b"]            # turn these codes off everywhere
+exclude = ["tests/legacy/*"]  # skip files matching these globs
+long_test_threshold = 30      # line limit for M2 (default 50)
+inline_setup_threshold = 3    # stmt limit for D5 (default 5)
+
+[tool.falsegreen.severity]
+C8 = "high"    # promote: now blocks
+C6 = "off"     # disable
+C22 = "low"    # enable the async-never-awaits check
+D1 = "info"    # enable Assertion Roulette (diagnostic, no exit impact)
+M2 = "info"    # enable Long Test Method
+```
+
+Precedence, highest first: `--disable` CLI, inline `# falsegreen: ignore`, config file, built-in default. The diagnostic and coupling group (`D1`, `D3`-`D6`, `M2`, `C22`) is **off by default** and is enabled only through config `severity = "info"`. There is no `--diagnostics` flag on the Python scanner (that flag belongs to the JS and Robot siblings); enable diagnostics here through config.
+
+**`--config-audit`** is a separate mode: instead of scanning test files it reads the pytest and coverage config (`pyproject.toml`, `pytest.ini`, `tox.ini`, `setup.cfg`) and reports the project-layer ways a suite stays green by configuration. Run on a `pytest.ini` carrying `addopts = -x`:
+
+```
+LOW confidence (test smell, confirm by hand or with /falsegreen)
+----------------------------------------------------------------
+  pytest.ini:1  [PL2] filterwarnings does not promote warnings to errors ...
+  pytest.ini:1  [PL7] no coverage gate (--cov-fail-under / fail_under) ...
+  pytest.ini:1  [PL8] addopts stops the run early (-x / --maxfail / --exitfirst) ...
+
+Summary: 0 high, 3 low.
+By level: project:3
+```
+
+The PL codes: `PL1` (`python -O` / `PYTHONOPTIMIZE` strips every `assert`), `PL2` (warnings not promoted to errors), `PL7` (no coverage gate), `PL8` (`addopts` stops the run early). The per-file scan cannot see config, so this mode complements it.
+
+**`--baseline` / `--write-baseline`** adopt the scanner on a legacy repo without a wall of red:
+
+```bash
+falsegreen --write-baseline tests/   # writes .falsegreen-baseline.json, exit 0
+falsegreen --baseline tests/         # suppresses recorded findings, fails on new ones
+```
+
+Captured:
+
+```
+falsegreen: wrote 2 fingerprint(s) to .falsegreen-baseline.json
+```
+
+A finding is fingerprinted by relative path, code, detail, and normalized source line, not line number, so adding code above it does not re-trigger a baselined finding. Commit `.falsegreen-baseline.json`; the ratchet only tightens. Both flags take an optional explicit path.
+
+### CI integration
+
+**GitHub Actions** (text gate plus SARIF upload to code scanning):
+
+```yaml
+name: falsegreen
+on: [push, pull_request]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write      # required for the SARIF upload
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.x" }
+      - run: pip install falsegreen
+      - name: Scan and emit SARIF
+        run: falsegreen tests/ --format sarif --output falsegreen.sarif
+        continue-on-error: true   # let the upload run even when exit 20
+      - uses: github/codeql-action/upload-sarif@v3
+        with: { sarif_file: falsegreen.sarif }
+      - name: Fail on high-confidence findings
+        run: falsegreen tests/    # exit 20 fails the job
+```
+
+**Pre-commit hook:**
+
+```yaml
+  - repo: https://github.com/vinicq/falsegreen
+    rev: v0.9.1          # pin a tag; run `pre-commit autoupdate` to move it
+    hooks:
+      - id: falsegreen
+```
+
+Then `pre-commit install`. The hook entry is `falsegreen --staged` with `pass_filenames: false`, so it reads the staged test files itself; do not add file arguments. HIGH findings block the commit. Bypass once with `git commit --no-verify`, or set `FALSEGREEN_BLOCK=0` to make the hook warn-only. To run at push time instead, add `stages: [pre-push]` under the hook.
+
+Raw git hook without the pre-commit framework:
+
+```bash
+python -m falsegreen.hook_install --repo .      # install
+python -m falsegreen.hook_install --uninstall   # remove
+```
+
+### Scope: what it does NOT do
+
+It never imports or runs your tests; detection is structural. It does not judge whether an expected value contradicts intended behaviour, whether a mock replaced the unit under test, or whether the test re-implements the production formula. Those are semantic (cases 10/11/12/15/18) and need the [falsegreen-skill](https://github.com/vinicq/falsegreen-skill) LLM pass. It is not a style linter or a coverage tool. The full code catalog, with a BAD and CLEAN example per code, is in the [online docs](https://vinicq.github.io/falsegreen-docs/) and [`docs/guide.md`](docs/guide.md).
+
+---
+
 ## Table of contents
 
 - [Why this exists](#why-this-exists)
@@ -400,7 +666,7 @@ Add to `.pre-commit-config.yaml`:
 
 ```yaml
   - repo: https://github.com/vinicq/falsegreen
-    rev: v0.6.0
+    rev: v0.9.1
     hooks:
       - id: falsegreen
 ```
