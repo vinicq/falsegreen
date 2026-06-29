@@ -591,6 +591,18 @@ A real API or database hit inside a test that claims to be a unit test is itself
 a literal path), C29 (`os.environ` mutated), and C30 (mock interceptor never activated) flag
 those forms.
 
+### Patterns by test level and scope
+
+The same false-green shape is classified by the level the test runs at: the level is a
+per-finding axis (J3), read as unit, integration, or E2E. The codes that cluster at each
+level in Python:
+
+- **Unit:** `C5`/`C7` (always-true, self-compare), `C2b` (calls the code, asserts nothing), `C56` (sync assert of a never-awaited coroutine), and the semantic `S1`/`S5` (intent mismatch, tests the framework).
+- **Integration:** `C9b` (request oracle off, `expected_status=any`), `C50` (`caplog`/`assertLogs` captured but never asserted).
+- **E2E:** `C16` (sleep as synchronization, uncontrolled time).
+
+Full matrix on the docs site: [patterns by test level](https://vinicq.github.io/falsegreen-docs/concepts/by-test-level/) and [what we do not flag](https://vinicq.github.io/falsegreen-docs/concepts/what-we-do-not-flag/).
+
 ## Diagnostic and coupling codes (opt-in)
 
 Seven additional codes surface smells that do not create false positives but hurt observability and maintainability. All are **off by default**. Enable with `severity = { CODE = "info" }` in config. `info` findings appear in separate DIAGNOSTIC and COUPLING sections and do not affect the exit code.
