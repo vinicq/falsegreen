@@ -117,6 +117,11 @@ CASES = {
     "C44": ("numeric tautology — len()/abs() compared so the result is always true", "high", "J2"),
     "C45": ("empty @pytest.mark.parametrize list — the test is generated with zero cases and never runs", "high", "J1"),
     "C48": ("test flips a test-mode flag (env/module) then asserts — exercises the product's test-only branch, not real behaviour", "low", "J1"),
+    "C49": ("pytest.warns/assertWarns wraps more than one call (an unrelated earlier line may warn while the target never does)", "low", "J1"),
+    "C50": ("caplog/assertLogs output captured but never asserted — the capture has no effect on pass/fail", "low", "J4"),
+    "C51": ("empty-bodied pytest.raises/warns context — the call that should raise is never made", "high", "J1"),
+    "C52": ("membership self-confirmation (assert x in a collection built from x) — true by construction", "low", "J2"),
+    "C55": ("assertion compares two mock-rooted values — both sides are the test's own doubles, not the SUT", "low", "J3"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
     # --- diagnostic group (readability / observability; default off) ----------
     "D1":  ("multiple assertions without messages (assertion roulette)", "off", "J4"),
@@ -198,6 +203,11 @@ FIX_HINTS = {
     "C44": "compare against a meaningful bound, not an always-true one",
     "C45": "add at least one case to the parametrize list",
     "C48": "assert the behaviour a real user hits; do not force the product's test-mode branch from the test",
+    "C49": "wrap only the single call expected to warn in pytest.warns",
+    "C50": "assert on the captured caplog records / log output",
+    "C51": "make the call that should raise inside the pytest.raises block",
+    "C52": "compare against an independent collection, not one built from the subject",
+    "C55": "compare a mock-rooted value against a concrete expected value",
     "CC":  "restore the commented-out assertion, or delete it",
     "D1":  "add an assertion message to each assert",
     "D3":  "remove the duplicate assertion",
@@ -1740,6 +1750,92 @@ def gather_mock_names(func):
     return names
 
 
+def is_warns_context(node):
+    """A pytest warning context: pytest.warns(...) / pytest.deprecated_call(...),
+    or the xunit self.assertWarns/assertWarnsRegex (anchored to self/cls)."""
+    if is_call_to(node, "pytest.warns", "warns",
+                  "pytest.deprecated_call", "deprecated_call"):
+        return True
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+            and node.func.attr in ("assertWarns", "assertWarnsRegex") \
+            and isinstance(node.func.value, ast.Name) \
+            and node.func.value.id in ("self", "cls"):
+        return True
+    return False
+
+
+def is_raises_or_warns_context(node):
+    """Any exception/warning capturing context: pytest.raises, xunit assertRaises,
+    or a warning context (C49/C51 share this with C19/C28)."""
+    return is_call_to(node, "pytest.raises", "raises") \
+        or is_xunit_raises_call(node) or is_warns_context(node)
+
+
+def membership_self_confirm(test):
+    """C52: `x in <literal collection holding x>` is true by construction. The
+    left operand is AST-identical to an element of a literal Set/List/Tuple on the
+    right, and has no Call (a call on each side may yield distinct objects, mirror
+    C7's no-call guard). Returns True only for a single `in` comparison."""
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1):
+        return False
+    if not isinstance(test.ops[0], ast.In):
+        return False
+    container = test.comparators[0]
+    if not isinstance(container, (ast.Set, ast.List, ast.Tuple)):
+        return False  # a Name/registry container is a real lookup, not self-confirm
+    if any(isinstance(c, ast.Call) for c in ast.walk(test.left)):
+        return False
+    try:
+        left = ast.dump(test.left)
+    except Exception:
+        return False
+    for e in container.elts:
+        try:
+            if ast.dump(e) == left:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def membership_is_eq_semantics(func, test):
+    """Exempt C52 when the membership `x in {x}` is the __eq__/__hash__ half of a
+    deliberate equality exercise: a sibling `assert x == x` / `assert x is x` on
+    the SAME operand (aiohttp/starlette `assert ws == ws; assert ws in {ws}`). The
+    sibling self-compare is what marks intent; a lone `x in {x}` stays C52."""
+    try:
+        left = ast.dump(test.left)
+    except Exception:
+        return False
+    for n in ast.walk(func):
+        if isinstance(n, ast.Compare) and n is not test \
+                and len(n.ops) == 1 and isinstance(n.ops[0], (ast.Eq, ast.Is)):
+            try:
+                if ast.dump(n.left) == left == ast.dump(n.comparators[0]):
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def both_sides_mock(test, mock_names):
+    """C55: an == / is comparison whose BOTH operands are mock-rooted attribute
+    chains (e.g. `m.foo == m.bar`, `a.return_value == b.return_value`). Each side
+    must be an Attribute whose root Name is a proven local mock; one real side is
+    a legitimate check and stays quiet."""
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1):
+        return False
+    if not isinstance(test.ops[0], (ast.Eq, ast.Is)):
+        return False
+    left, right = test.left, test.comparators[0]
+    for side in (left, right):
+        if not isinstance(side, ast.Attribute):
+            return False
+        if root_name(side) not in mock_names:
+            return False
+    return True
+
+
 def _stmt_is_terminator(stmt):
     """An unconditional control-flow exit: nothing after it in this block runs."""
     if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
@@ -2108,6 +2204,12 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                                         "assert the resulting state instead"))
             elif assert_self_compare(test) and not in_equality_semantics_test(func, test):
                 findings.append(Finding(file, n.lineno, "C7"))
+            elif both_sides_mock(test, mock_names):
+                findings.append(Finding(file, n.lineno, "C55",
+                                        "both sides are mock-rooted — the comparison exercises the doubles, not the SUT"))
+            elif membership_self_confirm(test) and not membership_is_eq_semantics(func, test):
+                findings.append(Finding(file, n.lineno, "C52",
+                                        "the collection is built from the subject — membership is true by construction"))
             else:
                 if assert_exact_float(test):
                     findings.append(Finding(file, n.lineno, "C8"))
@@ -2377,6 +2479,37 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
         findings.append(Finding(file, n.lineno, "C28",
                                 "'%s' declared but never read" % excinfo_name))
 
+    # C49: a pytest.warns / deprecated_call / assertWarns context wrapping more
+    # than one statement (sibling of C19 for raises). An unrelated earlier line
+    # may emit the expected warning while the call under test never warns, so the
+    # context is satisfied for the wrong reason. Mirror C19: only len(body) > 1.
+    for n in children_no_nesting(func):
+        if not isinstance(n, ast.With):
+            continue
+        if any(is_warns_context(item.context_expr) for item in n.items) \
+                and len(n.body) > 1:
+            findings.append(Finding(file, n.lineno, "C49",
+                                    "narrow the block to the one call that should warn"))
+
+    # C51: a pytest.raises / warns context whose body contains NO call at all
+    # (only pass / docstring / ...). The author left out the call under test, so
+    # nothing can ever be captured. One call is legitimate; an `as NAME` binding
+    # is C28 territory and is skipped here.
+    for n in children_no_nesting(func):
+        if not isinstance(n, ast.With):
+            continue
+        ctx_items = [item for item in n.items
+                     if is_raises_or_warns_context(item.context_expr)]
+        if not ctx_items:
+            continue
+        if any(item.optional_vars is not None for item in ctx_items):
+            continue  # `as excinfo` inspection is C28's concern
+        if any(isinstance(sub, ast.Call)
+               for stmt in n.body for sub in ast.walk(stmt)):
+            continue  # the call that should raise/warn is present
+        findings.append(Finding(file, n.lineno, "C51",
+                                "no call inside the block — nothing can raise or warn"))
+
     # C48: dark-patch — the test flips a known test-mode toggle (env var or a
     # module/settings flag) to a test-mode value and then asserts, so it exercises
     # the product's test-only branch instead of real behaviour. Detection-only;
@@ -2549,6 +2682,48 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             if names and not (names & _assert_names):
                 findings.append(Finding(file, n.lineno, "C31",
                                         "readouterr() result captured but never asserted"))
+
+    # C50: log output captured but never asserted (logging analogue of C31).
+    # Two shapes: `with self.assertLogs(...) as cm` where cm is never read in any
+    # assertion, or `with caplog.at_level(...)` / a `caplog`-rooted read where the
+    # caplog fixture name never reaches an assertion. The capture has no effect on
+    # pass/fail. _assert_names only covers `assert` statements, so also gather names
+    # read inside xunit assert* / mock-assert calls (assertLogs is xunit-style).
+    _assert_read_names = set(_assert_names)
+    for node in children_no_nesting(func):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            callee = node.value.func
+            last = dotted_name(callee).split(".")[-1] if callee is not None else ""
+            if last.startswith("assert") or is_xunit_assert_call(node.value):
+                for sub in ast.walk(node.value):
+                    if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                        _assert_read_names.add(sub.id)
+    for n in children_no_nesting(func):
+        if not isinstance(n, ast.With):
+            continue
+        for item in n.items:
+            ce = item.context_expr
+            # xunit: with self.assertLogs(...) [as cm]
+            if isinstance(ce, ast.Call) and isinstance(ce.func, ast.Attribute) \
+                    and ce.func.attr in ("assertLogs", "assertNoLogs") \
+                    and isinstance(ce.func.value, ast.Name) \
+                    and ce.func.value.id in ("self", "cls"):
+                if ce.func.attr == "assertNoLogs":
+                    break  # assertNoLogs is itself the assertion
+                bound = item.optional_vars.id \
+                    if isinstance(item.optional_vars, ast.Name) else None
+                if bound is None or bound not in _assert_read_names:
+                    findings.append(Finding(file, n.lineno, "C50",
+                                            "assertLogs output captured but never asserted"))
+                break
+            # pytest: with caplog.at_level(...) / caplog.set_level(...)
+            if isinstance(ce, ast.Call) and isinstance(ce.func, ast.Attribute) \
+                    and ce.func.attr in ("at_level", "set_level") \
+                    and root_name(ce) == "caplog":
+                if "caplog" not in _assert_read_names:
+                    findings.append(Finding(file, n.lineno, "C50",
+                                            "caplog output captured but never asserted"))
+                break
 
     # C33: sklearn/ML metric result never asserted. Calling accuracy_score(),
     # f1_score(), model.score(), etc. without asserting on the return value means

@@ -141,6 +141,15 @@ CLEAN_LOOKALIKES = {
         def test_parametrized(a):
             assert a > 0
     """,
+    # C51 fires on an empty-bodied pytest.raises block (no call inside, the SUT
+    # call was omitted). A block with a single call reaches the same With branch
+    # and is clean -- one token from the empty `pass`.
+    "C51": """
+        import pytest
+        def test_raises():
+            with pytest.raises(ValueError):
+                parse("bad")
+    """,
 }
 
 

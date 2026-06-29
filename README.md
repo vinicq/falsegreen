@@ -150,6 +150,11 @@ More from the consolidated catalog:
 | `C44` | Numeric tautology (`len(x) >= 0`, `abs(x) >= 0`, a mock's `call_count >= 0`) — always true | HIGH |
 | `C45` | Empty `@pytest.mark.parametrize` list — the test is generated with zero cases | HIGH |
 | `C48` | Dark patch — the test forces a test-mode flag (`os.environ["TESTING"]`, `settings.TESTING`) then asserts, exercising the product's test-only branch | LOW |
+| `C49` | `pytest.warns` / `assertWarns` / `deprecated_call` wraps more than one call — an unrelated earlier line may warn while the target never does (warns sibling of C19) | LOW |
+| `C50` | `caplog` / `assertLogs` output captured but never asserted — the capture has no effect on pass/fail (logging sibling of C31) | LOW |
+| `C51` | Empty-bodied `pytest.raises` / `warns` context — no call inside the block, so the call that should raise is never made | HIGH |
+| `C52` | Membership self-confirmation — `assert x in {x}`, the collection is built from the subject so membership is true by construction (membership variant of C7) | LOW |
+| `C55` | Assertion compares two mock-rooted values — `assert m.foo == m.bar`, both sides are the test's own doubles not the SUT | LOW |
 
 ### Codes the scanner does not detect
 
