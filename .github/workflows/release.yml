@@ -18,7 +18,32 @@ permissions:
   contents: read
 
 jobs:
+  verify:
+    # Fail the release before publishing if the tag, the manifest, __version__, CITATION,
+    # and the CHANGELOG disagree. Real drift happened (a manifest left behind its tag), and
+    # an OIDC publish of a mismatched version is unrecoverable (#95).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Version parity (tag == pyproject == __version__ == CITATION == CHANGELOG)
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          dunder=$(grep -m1 '__version__' src/falsegreen/scanner.py | sed -E 's/.*"([^"]+)".*/\1/')
+          cff=$(grep -m1 '^version:' CITATION.cff | sed -E 's/^version:[[:space:]]*//')
+          fail=0
+          for pair in "pyproject:$manifest" "__version__:$dunder" "CITATION:$cff"; do
+            name="${pair%%:*}"; val="${pair#*:}"
+            if [ "$tag" != "$val" ]; then echo "::error::tag ${GITHUB_REF_NAME} != ${name} ${val}"; fail=1; fi
+          done
+          if ! grep -q "^## \[${manifest}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no version section for ${manifest}"; fail=1
+          fi
+          if [ "$fail" = 0 ]; then echo "version parity OK: ${manifest}"; fi
+          exit $fail
+
   build:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
