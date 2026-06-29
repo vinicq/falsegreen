@@ -40,7 +40,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
-__version__ = "0.8.1"  # keep in lockstep with pyproject.toml (test_version_lockstep enforces it)
+__version__ = "0.9.0"  # keep in lockstep with pyproject.toml (test_version_lockstep enforces it)
 TOOL_URI = "https://github.com/vinicq/falsegreen"
 DOCS_CATALOG_URI = "https://vinicq.github.io/falsegreen-docs/catalog/python/"
 
@@ -122,6 +122,11 @@ CASES = {
     "C51": ("empty-bodied pytest.raises/warns context — the call that should raise is never made", "high", "J1"),
     "C52": ("membership self-confirmation (assert x in a collection built from x) — true by construction", "low", "J2"),
     "C55": ("assertion compares two mock-rooted values — both sides are the test's own doubles, not the SUT", "low", "J3"),
+    # --- deep-sweep codes (issue #51): NEW, not field-validated yet (L15). LOW/HIGH
+    #     per the structural certainty of each; precision-first guards. ----------
+    "C56": ("sync assert of a never-awaited coroutine — the operand is a call to a local async def, so the check runs on a coroutine object, not its value", "low", "J1"),
+    "C57": ("assertion compares against an unconfigured Mock attribute — the expected side is m.attr on a bare Mock()/MagicMock() with no spec, which auto-creates a fresh truthy Mock", "low", "J3"),
+    "C59": ("bare top-level comparison expression — result == expected written as a statement, the value is computed and discarded so nothing is asserted (loose-statement sibling of C39)", "high", "J1"),
     "CC":  ("commented-out assert (check switched off)", "low", "J1"),
     # --- diagnostic group (readability / observability; default off) ----------
     "D1":  ("multiple assertions without messages (assertion roulette)", "off", "J4"),
@@ -208,6 +213,9 @@ FIX_HINTS = {
     "C51": "make the call that should raise inside the pytest.raises block",
     "C52": "compare against an independent collection, not one built from the subject",
     "C55": "compare a mock-rooted value against a concrete expected value",
+    "C56": "await the async call before asserting (or run it via asyncio.run)",
+    "C57": "construct the mock with spec=, or compare against a concrete expected value",
+    "C59": "replace the bare comparison with assert so pytest checks it",
     "CC":  "restore the commented-out assertion, or delete it",
     "D1":  "add an assertion message to each assert",
     "D3":  "remove the duplicate assertion",
@@ -1935,6 +1943,155 @@ def both_sides_mock(test, mock_names):
     return True
 
 
+# --- deep-sweep helpers (issue #51, C56/C57/C59) ---------------------------
+# These are NEW and not field-validated yet (L15); guards are precision-first.
+
+def file_async_def_names(tree):
+    """Names bound to an `async def` anywhere in the file: module-level functions
+    and methods inside any class body. C56 only fires when the asserted call
+    resolves to one of these LOCAL async defs (intra-file). A cross-module callee
+    is undecidable from the AST and must not fire, so it is deliberately absent."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef):
+            names.add(node.name)
+    return names
+
+
+def _locally_shadowed_sync_names(func):
+    """Names the test body rebinds to a NON-async callable: a sync `def`, an
+    `Assign`/`AnnAssign` target, a function arg, or an `import`/`from ... import`.
+    C56 resolves a callee by bare name against the file-wide async-def set; if the
+    test shadows that name with a sync binding, the call is no longer a coroutine
+    and must not fire (the L1 scope trap). A local `async def` of the same name is
+    NOT a shadow (still async), so a name bound by a local `async def` anywhere in
+    the body is removed from the shadow set even if a sync binding also exists.
+
+    Walks `ast.walk(func)` (not children_no_nesting) because a shadowing `def` is
+    itself a def node, which children_no_nesting skips; the inner def's OWN body is
+    irrelevant here, only the name it binds in the test's scope."""
+    sync_bound = set()
+    async_bound = set()
+    for a in list(func.args.args) + list(getattr(func.args, "posonlyargs", []) or []) \
+            + list(getattr(func.args, "kwonlyargs", []) or []):
+        sync_bound.add(a.arg)
+    for n in ast.walk(func):
+        if n is func:
+            continue
+        if isinstance(n, ast.AsyncFunctionDef):
+            async_bound.add(n.name)
+        elif isinstance(n, ast.FunctionDef):
+            sync_bound.add(n.name)
+        elif isinstance(n, ast.Assign):
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    sync_bound.add(t.id)
+        elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+            sync_bound.add(n.target.id)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            for alias in n.names:
+                sync_bound.add(alias.asname or alias.name.split(".")[0])
+    return sync_bound - async_bound
+
+
+def assert_unawaited_coroutine(test, async_names, func):
+    """C56: the asserted expression contains a `Call` to a local `async def` and
+    no `await` wraps it, so the operand is a coroutine object, not the awaited
+    value. Quiet when the call is awaited (an `Await` node anywhere in the test)
+    or when the coroutine is handed to a loop runner (asyncio.run / anyio.run /
+    run_until_complete / trio.run) before the comparison — those consume it.
+    Resolves the callee only to a bare Name in `async_names` (intra-file), never a
+    dotted/cross-module call, and never a name the test locally rebinds to a sync
+    callable (scope guard, L1)."""
+    if not async_names:
+        return False
+    if any(isinstance(n, ast.Await) for n in ast.walk(test)):
+        return False
+    for call in ast.walk(test):
+        if not isinstance(call, ast.Call):
+            continue
+        # a loop runner consuming a coroutine arg means it IS driven, not vacuous
+        if is_call_to(call, "asyncio.run", "anyio.run", "trio.run",
+                      "run_until_complete", "loop.run_until_complete"):
+            return False
+    shadowed = _locally_shadowed_sync_names(func)
+    for call in ast.walk(test):
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) \
+                and call.func.id in async_names \
+                and call.func.id not in shadowed:
+            return True
+    return False
+
+
+def unspecced_mock_names(func):
+    """Names bound, in this function body, to a BARE Mock()/MagicMock()/AsyncMock()
+    with no spec=/spec_set= keyword. C57 only treats an attribute read on one of
+    these as auto-created (always a fresh Mock). A mock built with spec= constrains
+    its attributes, so reading m.attr can legitimately equal a real value — those
+    names are excluded. NonCallableMock/create_autospec/patch are out: autospec and
+    patch targets are spec-constrained or proxy a real object."""
+    bare_factories = {"Mock", "MagicMock", "AsyncMock"}
+    names = set()
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call):
+            last = dotted_name(n.value.func).split(".")[-1]
+            if last not in bare_factories:
+                continue
+            if any(kw.arg in ("spec", "spec_set") for kw in n.value.keywords):
+                continue
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    names.add(t.id)
+    return names
+
+
+def _mock_attrs_explicitly_set(func):
+    """(name, attr) pairs assigned in the function body, e.g. `m.role = 3`. C57
+    must stay quiet on these: once an attribute is set, reading it is a real value,
+    not an auto-created Mock. Only one level deep (m.attr), the shape C57 inspects."""
+    pairs = set()
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name):
+                    pairs.add((t.value.id, t.attr))
+    return pairs
+
+
+def compare_unconfigured_mock_attr(test, unspecced, set_pairs):
+    """C57: a single == / != / is comparison where one side is `m.attr` and `m` is
+    a bare unspecced Mock whose `attr` was never explicitly set. That side is a
+    freshly auto-created Mock, so the comparison is vacuous. Requires exactly one
+    side to be such a mock attribute (both sides mock is C55's territory)."""
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1):
+        return False
+    if not isinstance(test.ops[0], (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)):
+        return False
+    def is_unconfigured_attr(side):
+        if not (isinstance(side, ast.Attribute) and isinstance(side.value, ast.Name)):
+            return False
+        if side.value.id not in unspecced:
+            return False
+        # a known mock-assert attribute (m.assert_called...) or call_count is not a
+        # value comparison; those are C13/C6c, leave them alone.
+        if side.attr in MOCK_ASSERTS_VALID or side.attr == "call_count":
+            return False
+        return (side.value.id, side.attr) not in set_pairs
+    left, right = test.left, test.comparators[0]
+    return is_unconfigured_attr(left) ^ is_unconfigured_attr(right)
+
+
+def has_bare_compare_statement(func):
+    """True if the function body has a bare `Expr(Compare)` statement (the C59
+    shape). Used to let C59 OWN that line so C2b does not also fire — a bare
+    comparison is the author's attempt at a check, so it is not 'checks nothing'
+    in the generic C2b sense (mirrors the C2c exemption of C2b)."""
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Expr) and isinstance(n.value, ast.Compare):
+            return True
+    return False
+
+
 def _stmt_is_terminator(stmt):
     """An unconditional control-flow exit: nothing after it in this block runs."""
     if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
@@ -2206,9 +2363,11 @@ def looks_like_forgotten_nested_test(func, scope):
 
 def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                      file_layer="logic", controls_time=False, long_test_threshold=50,
-                     inline_setup_threshold=5):
+                     inline_setup_threshold=5, async_names=frozenset()):
     line = func.lineno
     mock_names = gather_mock_names(func)
+    _unspecced_mocks = unspecced_mock_names(func)
+    _mock_set_pairs = _mock_attrs_explicitly_set(func)
     ctx = detect_test_context(func, file_layer)
 
     # C25: xfail without strict=True — XPASS silently treated as pass, masking a fixed bug.
@@ -2248,7 +2407,7 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             # asserts nothing. C2c owns this shape so it does not double-report as C2b.
             findings.append(Finding(file, line, "C2c",
                                     "a self.subTest(...) block wraps work but asserts nothing"))
-        elif makes_any_call(func):
+        elif makes_any_call(func) and not has_bare_compare_statement(func):
             findings.append(Finding(file, line, "C2b",
                                     "if the check lives in a helper called here, ignore"))
 
@@ -2297,6 +2456,12 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
             elif both_sides_mock(test, mock_names):
                 findings.append(Finding(file, n.lineno, "C55",
                                         "both sides are mock-rooted — the comparison exercises the doubles, not the SUT"))
+            elif compare_unconfigured_mock_attr(test, _unspecced_mocks, _mock_set_pairs):
+                findings.append(Finding(file, n.lineno, "C57",
+                                        "the expected side is an attribute of a bare Mock() with no spec — it auto-creates a fresh Mock, so the comparison is vacuous"))
+            elif assert_unawaited_coroutine(test, async_names, func):
+                findings.append(Finding(file, n.lineno, "C56",
+                                        "the operand calls a local async def but is never awaited — the assertion checks a coroutine object, not its value"))
             elif membership_self_confirm(test) and not membership_is_eq_semantics(func, test):
                 findings.append(Finding(file, n.lineno, "C52",
                                         "the collection is built from the subject — membership is true by construction"))
@@ -2387,6 +2552,18 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
         if isinstance(n, ast.Return) and isinstance(n.value, ast.Compare):
             findings.append(Finding(file, n.lineno, "C39",
                                     "use assert: pytest ignores the value a test returns"))
+
+    # C59: a bare comparison written as a statement (`result == expected`) instead
+    # of `assert result == expected`. pytest computes the boolean and discards it,
+    # so nothing is checked (the loose-statement sibling of C39's `return x == y`).
+    # The bare `ast.Expr(value=ast.Compare)` shape is the whole signal: an Expr
+    # statement is never consumed by assert/return/call-arg, so a Compare there is
+    # always evaluated-and-dropped. Dead lines are owned by C20 and skipped (L2).
+    for n in children_no_nesting(func):
+        if isinstance(n, ast.Expr) and isinstance(n.value, ast.Compare) \
+                and n.lineno not in dead_lines:
+            findings.append(Finding(file, n.lineno, "C59",
+                                    "bare comparison as a statement — use assert, the value is discarded"))
 
     # C43: pytest.skip() / self.skipTest() in the middle of the body, after some
     # logic has run, with a verification still below it. A skip at the top is a
@@ -3121,6 +3298,7 @@ def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
     layer = detect_file_layer(tree)
     level = detect_pyramid_level(tree)
     time_controlled = file_controls_time(tree)
+    async_def_names = file_async_def_names(tree)
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             # A top-level `test*` function is only a real (rotten-green) test if
@@ -3134,7 +3312,8 @@ def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
                 analyze_function(node, file, findings, file_layer=layer,
                                  controls_time=time_controlled,
                                  long_test_threshold=long_test_threshold,
-                                 inline_setup_threshold=inline_setup_threshold)
+                                 inline_setup_threshold=inline_setup_threshold,
+                                 async_names=async_def_names)
             elif is_pytest_test_file(file) and looks_like_loose_test(node) \
                     and not has_fixture_decorator(node) \
                     and not is_web_route_handler(node) \
@@ -3171,7 +3350,8 @@ def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
                                              file_layer=layer,
                                              controls_time=time_controlled,
                                              long_test_threshold=long_test_threshold,
-                                             inline_setup_threshold=inline_setup_threshold)
+                                             inline_setup_threshold=inline_setup_threshold,
+                                             async_names=async_def_names)
 
     # C38: two test functions/methods in the same scope share a name. Python
     # binds the later def over the earlier, so the first test silently never runs

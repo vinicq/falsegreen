@@ -4243,3 +4243,148 @@ def test_c16_trio_sleep_still_fires(tmp_path):
             await trio.sleep(1)
             assert run() == 1
     """)
+
+
+# --- deep-sweep codes C56/C57/C59 (issue #51) ------------------------------
+# NEW codes from the beyond-catalog deep sweep. Not field-validated yet (L15):
+# the synthetic pair below covers the branch, a real-repo round covers the idiom.
+
+def test_c56_sync_assert_of_unawaited_coroutine(tmp_path):
+    # A sync test that calls a local async def and checks the coroutine object
+    # rather than its awaited value. The operand is a coroutine, never the result.
+    assert "C56" in scan_source(tmp_path, """
+        async def fetch():
+            return 5
+        def test_fetch():
+            assert fetch() == 5
+    """)
+
+
+def test_c56_clean_when_awaited(tmp_path):
+    # One token away: the call is awaited, so the operand is the real value.
+    out = scan_source(tmp_path, """
+        async def fetch():
+            return 5
+        async def test_fetch():
+            assert await fetch() == 5
+    """)
+    assert "C56" not in out
+
+
+def test_c56_clean_when_driven_by_asyncio_run(tmp_path):
+    # The coroutine is consumed by asyncio.run, so it is driven, not vacuous.
+    out = scan_source(tmp_path, """
+        import asyncio
+        async def fetch():
+            return 5
+        def test_fetch():
+            assert asyncio.run(fetch()) == 5
+    """)
+    assert "C56" not in out
+
+
+def test_c56_clean_when_callee_is_cross_module(tmp_path):
+    # The callee is not a resolvable local async def, so it stays quiet (the
+    # cross-module case is undecidable from the AST and must not fire).
+    out = scan_source(tmp_path, """
+        from svc import fetch
+        def test_fetch():
+            assert fetch() == 5
+    """)
+    assert "C56" not in out
+
+
+def test_c56_clean_when_name_locally_shadowed_by_sync_def(tmp_path):
+    # The module has an async def fetch, but the test defines its own sync fetch
+    # that shadows it. One token from the BAD case, yet the callee is now a sync
+    # function, so the operand is a real value and C56 must stay quiet (scope guard).
+    out = scan_source(tmp_path, """
+        async def fetch():
+            return 5
+        def test_shadow():
+            def fetch():
+                return 5
+            assert fetch() == 5
+    """)
+    assert "C56" not in out
+
+
+def test_c56_clean_when_name_rebound_to_sync_callable(tmp_path):
+    # The test rebinds the async name to a sync lambda; the call is no longer a
+    # coroutine, so the bare-name resolution must not treat it as one.
+    out = scan_source(tmp_path, """
+        async def process():
+            return 1
+        def test_rebind():
+            process = lambda: 1
+            assert process() == 1
+    """)
+    assert "C56" not in out
+
+
+def test_c56_fires_on_local_async_def_unawaited(tmp_path):
+    # A test that defines its own async def and calls it without awaiting is the
+    # genuine unawaited-coroutine case; a local async name is still async (not a
+    # sync shadow), so C56 must still fire here.
+    assert "C56" in scan_source(tmp_path, """
+        def test_local():
+            async def fetch():
+                return 5
+            assert fetch() == 5
+    """)
+
+
+def test_c57_compare_against_unconfigured_mock_attr(tmp_path):
+    # The expected side is an attribute of a bare Mock() with no spec, which
+    # auto-creates a fresh Mock, so the comparison can never be meaningful.
+    assert "C57" in scan_source(tmp_path, """
+        from unittest.mock import Mock
+        def test_role():
+            m = Mock()
+            assert build_user().role == m.role
+    """)
+
+
+def test_c57_clean_when_mock_has_spec(tmp_path):
+    # A spec-constrained mock has real attributes, so reading m.role is a value.
+    out = scan_source(tmp_path, """
+        from unittest.mock import Mock
+        def test_role():
+            m = Mock(spec=User)
+            assert build_user().role == m.role
+    """)
+    assert "C57" not in out
+
+
+def test_c57_clean_when_attribute_explicitly_set(tmp_path):
+    # Once the attribute is set on the mock, reading it is a real value.
+    out = scan_source(tmp_path, """
+        from unittest.mock import Mock
+        def test_role():
+            m = Mock()
+            m.role = "admin"
+            assert build_user().role == m.role
+    """)
+    assert "C57" not in out
+
+
+def test_c59_bare_top_level_comparison(tmp_path):
+    # A comparison written as a statement is computed and discarded; nothing is
+    # checked. The loose-statement sibling of C39 (return of a comparison).
+    out = scan_source(tmp_path, """
+        def test_total():
+            cart = Cart([1])
+            cart.total() == 100
+    """)
+    assert "C59" in out
+    assert "C2b" not in out  # C59 owns the line, no generic checks-nothing report
+
+
+def test_c59_clean_when_asserted(tmp_path):
+    # One token away: the comparison is the test of an assert, not a bare Expr.
+    out = scan_source(tmp_path, """
+        def test_total():
+            cart = Cart([1])
+            assert cart.total() == 100
+    """)
+    assert "C59" not in out

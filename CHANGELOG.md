@@ -6,6 +6,32 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-29
+
+### Added
+- Three codes from the beyond-catalog deep sweep (#51, research doc
+  `deep-sweep-beyond-catalog.md`). All three are new and not field-validated against the
+  real-repo corpus yet, so treat them as provisional until a field round confirms each idiom:
+  - `C56` (low, J1): a sync `assert` whose operand calls a local `async def` and is never awaited.
+    The check runs on a coroutine object, not the awaited value, so it passes vacuously. The sync
+    sibling of `C22`. Fires only when the callee resolves to an `async def` in the same file; an
+    awaited call, a coroutine driven by `asyncio.run` / `anyio.run` / `trio.run` /
+    `run_until_complete`, or a cross-module callee stays quiet.
+  - `C57` (low, J3): an `==` / `is` comparison where one side reads an attribute of a bare
+    `Mock()` / `MagicMock()` / `AsyncMock()` built with no `spec=` / `spec_set=`. The attribute
+    auto-creates a fresh Mock, so the comparison can never match a real value. This is the
+    AST-decidable corner of the deferred `C40`; the broad form stays in the skill. A spec-built
+    mock, an explicitly set attribute (`m.attr = ...`), a mock-assert attribute, or both sides
+    mock-rooted (`C55`) stay quiet.
+  - `C59` (high, J1): a bare comparison written as a statement (`result == expected`) instead of
+    `assert result == expected`. pytest computes the boolean and discards it, so nothing is checked.
+    The loose-statement sibling of `C39`. When it fires it owns the line, so the generic `C2b`
+    no longer also reports it.
+- The fourth deep-sweep candidate (N3, an inert `pytest.raises` body) was not implemented: its
+  AST-decidable corner is already covered by `C51` (a body with no call), and the remaining
+  non-empty case needs to decide which call can raise the target, which is dataflow-level and
+  belongs to the skill (`S17`). Adding it would double-report `C51` or raise the false-positive rate.
+
 ## [0.8.1] - 2026-06-29
 
 ### Fixed

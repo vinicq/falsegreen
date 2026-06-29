@@ -150,6 +150,14 @@ CLEAN_LOOKALIKES = {
             with pytest.raises(ValueError):
                 parse("bad")
     """,
+    # C59 fires on a bare comparison written as a statement (value discarded). A
+    # comparison consumed by assert sits one token away and must stay clean -- the
+    # Compare is the test of an Assert, not a bare Expr statement.
+    "C59": """
+        def test_total():
+            cart = Cart([1])
+            assert cart.total() == 100
+    """,
 }
 
 
