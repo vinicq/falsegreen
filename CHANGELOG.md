@@ -6,6 +6,30 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-06-29
+
+### Fixed
+- Five false-positives surfaced by running the scanner on real-world suites (field validation, #130):
+  - `C21` no longer fires on a fluent assertion used unconditionally. `assert_that(x).is_equal_to(y)`
+    and `expect(page).to_have_text(...)` carry their recognized entry token at the chain root, not the
+    outer call leaf; the unconditional-pass helpers read only the outer leaf and misread the chain as
+    "has a check but none unconditional". The recognition predicate is now shared, so the
+    per-statement and whole-function helpers cannot drift apart again. A conditional fluent assertion
+    still reports `C21`.
+  - `C16` "fixed sleep" is anchored to `time.sleep`, the async sleeps (`asyncio.sleep`,
+    `anyio.sleep`, `trio.sleep`, which all block real wall-clock time), and a bare imported
+    `sleep` (`from time import sleep`). An arbitrary-receiver `obj.sleep()` no longer matches on
+    the method name alone: a page-object `op.sleep(3)` or a coroutine `gen.sleep(0)` stays quiet.
+  - `C16` no longer flags a `random.*` value stringified into a unique nonce and read back only by
+    membership (`assert nonce in log`, `.contains(nonce)`). A random value under equality still reports.
+  - `C2b` (and the empty/weak codes) no longer fire on a `@pytest.fixture` named `test_*`. pytest does
+    not collect a fixture as a test, so its body is not a rotten-green test; the fixture guard now
+    applies to the primary dispatch, not just the `C4` branch.
+  - `C2b` / `C21` recognize `pytest_check` soft asserts as real oracles. The dotted `check.<member>`
+    form is required for a known member set (`equal`, `is_true`, `is_in`, `almost_equal`, ...), so a
+    body whose only verification is such a call is not reported. A bare `check(...)`, a local object
+    `check.run(...)`, or an unknown `check.<other>()` is not treated as an oracle.
+
 ## [0.8.0] - 2026-06-29
 
 ### Added
