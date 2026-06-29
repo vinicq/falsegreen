@@ -4,7 +4,7 @@ title: "falsegreen: find Python tests that pass green without protecting anythin
 authors:
   - family-names: Queiroz
     given-names: Vinicius
-version: 0.6.0
+version: 0.7.0
 date-released: "2026-06-27"
 license: MIT
 repository-code: "https://github.com/vinicq/falsegreen"

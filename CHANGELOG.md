@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-28
+
 ### Added
 - `PL1` (low, J1, project layer): `--config-audit` now reports when the resolved pytest config runs
   the suite under `python -O` / `-OO` or sets `PYTHONOPTIMIZE`, which strips every `assert` at
@@ -397,7 +399,8 @@ First release.
   false positives: C6 on called boolean predicates, C1 on literal-collection
   loops, and C7 on `f() is f()` (the lru_cache / singleton identity test).
 
-[Unreleased]: https://github.com/vinicq/falsegreen/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/vinicq/falsegreen/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/vinicq/falsegreen/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/vinicq/falsegreen/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/vinicq/falsegreen/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/vinicq/falsegreen/compare/v0.3.0...v0.4.0
