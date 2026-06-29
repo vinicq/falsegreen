@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-29
+
 ### Added
 - `C49` (low, J1): a `pytest.warns` / `pytest.deprecated_call` / `self.assertWarns` context that
   wraps more than one statement. An unrelated earlier line can emit the expected warning while the
