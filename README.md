@@ -248,6 +248,9 @@ More from the consolidated catalog:
 | `C51` | Empty-bodied `pytest.raises` / `warns` context — no call inside the block, so the call that should raise is never made | HIGH |
 | `C52` | Membership self-confirmation — `assert x in {x}`, the collection is built from the subject so membership is true by construction (membership variant of C7) | LOW |
 | `C55` | Assertion compares two mock-rooted values — `assert m.foo == m.bar`, both sides are the test's own doubles not the SUT | LOW |
+| `C56` | Sync `assert` of a never-awaited coroutine — the operand calls a local `async def` with no `await`, so the check runs on a coroutine object not its value (sync sibling of C22) | LOW |
+| `C57` | Comparison against an unconfigured `Mock` attribute — `assert x == m.attr` on a bare `Mock()` with no `spec=`, which auto-creates a fresh truthy Mock (the AST-decidable corner of the deferred C40) | LOW |
+| `C59` | Bare top-level comparison — `result == expected` as a statement, the value is computed and discarded so nothing is asserted (loose-statement sibling of C39) | HIGH |
 
 ### Codes the scanner does not detect
 

@@ -33,6 +33,36 @@ Wire exit `20` into CI to block the merge; treat `10` as a warning. Each finding
 code, confidence (`high`/`low`), file, line, and the judgment (J1-J6) it belongs to, so the
 output can be grouped by category without splitting the module.
 
+## Multiplicity and counting
+
+How findings are counted and deduplicated. This is the reference for the three sibling
+scanners (Python here, falsegreen-js, robotframework-falsegreen): the rule has to match
+across all three or per-code prevalence numbers do not line up. Adjudicated in issue #64.
+
+- **Granularity is per-code, by the code's own logical unit.** A code whose smell is a
+  property of the whole test (the test never checks anything: C2, C2b, C21) fires once per
+  test. A code whose smell is a property of a specific occurrence (this assert is
+  always-true, this line reads the clock, this raises is too broad: C5, C7, C16, C44, ...)
+  fires once per occurrence. The per-assert value-shape codes are an `elif` chain, so one
+  assert line yields at most one of them; different detector families run in separate loops,
+  so one test yields many findings and one line can carry findings from different families.
+- **Dead-code suppression is threaded into every reader.** Dead lines are collected first
+  (`dead_lines`), and every per-assert branch skips them, so a line C20 owns as unreachable
+  does not also fire the per-assert codes. One dead-line set per test, consulted by every
+  detector that reads those lines.
+- **Same-line multi-code is allowed only across distinct mechanisms.** Within one assert's
+  value shape the codes are mutually exclusive (the `elif` chain). Across mechanisms (a line
+  that is both a broad-raises and a sleep) two codes co-fire: two distinct false-green
+  reasons.
+- **A global output dedup on `(file, line, code, detail)` is mandatory.** The driver
+  collapses identical tuples so each is emitted once (`scanner.py`, the final scan loop). It
+  makes counts comparable and is the safety net for any detector that double-pushes. The
+  sibling scanners add the same collapse at their top-level emit.
+
+The cross-scanner contract is recorded in the research hub's `shared/PROTOCOL.md`
+("Multiplicity and counting"), so Dataset A/B/C counts are computed under one rule.
+
+
 ## The case catalog
 
 The catalog is a single table: code to `(title, confidence, judgment)`. Confidence decides
