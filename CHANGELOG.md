@@ -6,6 +6,30 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `C49` (low, J1): a `pytest.warns` / `pytest.deprecated_call` / `self.assertWarns` context that
+  wraps more than one statement. An unrelated earlier line can emit the expected warning while the
+  call under test never warns, so the context passes for the wrong reason. Sibling of `C19` for
+  raises: only fires on `len(body) > 1`; a single-call block stays quiet; the xunit form is anchored
+  to `self`/`cls` (#122).
+- `C50` (low, J4): `caplog` / `assertLogs` log output captured but never asserted, the logging
+  analogue of `C31` (capsys) and `C33` (ML metric). Fires on `with self.assertLogs(...) as cm`
+  where `cm` never reaches an assertion, or `with caplog.at_level(...)` where the `caplog` fixture
+  never reaches one. Reading the captured name in any `assert` or `assert*` call keeps it quiet (#123).
+- `C51` (high, J1): an empty-bodied `pytest.raises` / `pytest.warns` context, a block holding only
+  `pass` / a docstring and no call at all. The author left out the call under test, so nothing can
+  ever be captured. One call is legitimate; an `as NAME` binding is left to `C28` and does not fire
+  here (#124).
+- `C52` (low, J2): membership self-confirmation, `assert x in {x}` / `x in [x, ...]` where the
+  literal collection is built from the same subject, so membership is true by construction. The
+  membership variant of `C7`. Mirrors `C7`'s no-call guard; a `Name`/registry container is a real
+  lookup and stays quiet; the `__eq__`/`__hash__` exercise (`assert x == x; assert x in {x}`) is
+  exempt (#125).
+- `C55` (low, J3): an assertion comparing two mock-rooted values, `assert m.foo == m.bar` /
+  `assert a.return_value == b.return_value`, where both sides are auto-created mock children, so the
+  comparison exercises the test's own doubles, not the SUT. Both operands must be attribute chains
+  rooted in a name `gather_mock_names` proves local; one real side keeps it quiet (#126).
+
 ## [0.7.0] - 2026-06-28
 
 ### Added

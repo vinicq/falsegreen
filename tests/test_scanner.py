@@ -3886,3 +3886,193 @@ def test_version_lockstep():
     assert __version__ == pkg_version == pyproject_v == cff_v, (
         "version lockstep broken: scanner=%s package=%s pyproject=%s CITATION=%s"
         % (__version__, pkg_version, pyproject_v, cff_v))
+
+
+# ---------------------------------------------------------------------------
+# C49: pytest.warns / assertWarns wrapping more than one call (sibling of C19)
+# ---------------------------------------------------------------------------
+
+def test_c49_warns_multi_call_fires(tmp_path):
+    assert "C49" in scan_source(tmp_path, """
+        import pytest
+        def test_dep():
+            with pytest.warns(DeprecationWarning):
+                build_config()
+                call_legacy()
+    """)
+
+
+def test_c49_warns_single_call_clean(tmp_path):
+    # One call inside the warns block is exactly the right shape, one token away.
+    assert "C49" not in scan_source(tmp_path, """
+        import pytest
+        def test_dep():
+            with pytest.warns(DeprecationWarning):
+                call_legacy()
+    """)
+
+
+def test_c49_xunit_assert_warns_multi_call_fires(tmp_path):
+    assert "C49" in scan_source(tmp_path, """
+        class T(TestCase):
+            def test_dep(self):
+                with self.assertWarns(DeprecationWarning):
+                    build_config()
+                    call_legacy()
+    """)
+
+
+def test_c49_deprecated_call_multi_fires(tmp_path):
+    assert "C49" in scan_source(tmp_path, """
+        import pytest
+        def test_dep():
+            with pytest.deprecated_call():
+                build_config()
+                call_legacy()
+    """)
+
+
+# ---------------------------------------------------------------------------
+# C50: caplog / assertLogs output captured but never asserted (sibling of C31)
+# ---------------------------------------------------------------------------
+
+def test_c50_assertlogs_not_asserted_fires(tmp_path):
+    assert "C50" in scan_source(tmp_path, """
+        class T(TestCase):
+            def test_log(self):
+                with self.assertLogs('app') as cm:
+                    run_job()
+    """)
+
+
+def test_c50_assertlogs_asserted_clean(tmp_path):
+    # cm.output reaches an assertIn one line down, so the capture has an oracle.
+    assert "C50" not in scan_source(tmp_path, """
+        class T(TestCase):
+            def test_log(self):
+                with self.assertLogs('app') as cm:
+                    run_job()
+                self.assertIn('done', cm.output[0])
+    """)
+
+
+def test_c50_caplog_not_asserted_fires(tmp_path):
+    assert "C50" in scan_source(tmp_path, """
+        def test_log(caplog):
+            with caplog.at_level('INFO'):
+                run_job()
+    """)
+
+
+def test_c50_caplog_asserted_clean(tmp_path):
+    assert "C50" not in scan_source(tmp_path, """
+        def test_log(caplog):
+            with caplog.at_level('INFO'):
+                run_job()
+            assert 'done' in caplog.text
+    """)
+
+
+# ---------------------------------------------------------------------------
+# C51: empty-bodied pytest.raises / warns context (call that should raise omitted)
+# ---------------------------------------------------------------------------
+
+def test_c51_empty_raises_body_fires(tmp_path):
+    assert "C51" in scan_source(tmp_path, """
+        import pytest
+        def test_raises():
+            with pytest.raises(ValueError):
+                pass
+    """)
+
+
+def test_c51_raises_with_one_call_clean(tmp_path):
+    # A single call inside the block is legitimate, one token (pass -> a call) away.
+    assert "C51" not in scan_source(tmp_path, """
+        import pytest
+        def test_raises():
+            with pytest.raises(ValueError):
+                parse("bad")
+    """)
+
+
+def test_c51_empty_warns_body_fires(tmp_path):
+    assert "C51" in scan_source(tmp_path, """
+        import pytest
+        def test_warns():
+            with pytest.warns(UserWarning):
+                pass
+    """)
+
+
+def test_c51_as_binding_left_to_c28_clean(tmp_path):
+    # An `as` binding is C28 territory, not C51, even with an empty body.
+    codes = scan_source(tmp_path, """
+        import pytest
+        def test_raises():
+            with pytest.raises(ValueError) as e:
+                pass
+    """)
+    assert "C51" not in codes
+
+
+# ---------------------------------------------------------------------------
+# C52: membership self-confirmation (assert x in collection built from x)
+# ---------------------------------------------------------------------------
+
+def test_c52_membership_self_confirm_fires(tmp_path):
+    assert "C52" in scan_source(tmp_path, """
+        def test_member():
+            assert obj.id in {obj.id}
+    """)
+
+
+def test_c52_membership_distinct_element_clean(tmp_path):
+    # One token away: the literal holds a DIFFERENT element, so it is a real check.
+    assert "C52" not in scan_source(tmp_path, """
+        def test_member():
+            assert obj.id in {other.id}
+    """)
+
+
+def test_c52_membership_in_registry_clean(tmp_path):
+    # A Name container is a lookup against a registry, not a self-built literal.
+    assert "C52" not in scan_source(tmp_path, """
+        def test_member():
+            assert obj.id in registry
+    """)
+
+
+def test_c52_eq_semantics_membership_exempt_clean(tmp_path):
+    # Beside `ws == ws` the membership is the __eq__/__hash__ half, not a smell.
+    assert "C52" not in scan_source(tmp_path, """
+        def test_eq():
+            assert ws == ws
+            assert ws in {ws}
+    """)
+
+
+# ---------------------------------------------------------------------------
+# C55: assertion comparing two mock-rooted values (both sides stand-ins)
+# ---------------------------------------------------------------------------
+
+def test_c55_both_sides_mock_fires(tmp_path):
+    assert "C55" in scan_source(tmp_path, """
+        def test_cmp(mock_a, mock_b):
+            assert mock_a.return_value == mock_b.return_value
+    """)
+
+
+def test_c55_one_real_side_clean(tmp_path):
+    # One token away: the right side is a concrete literal, a legitimate check.
+    assert "C55" not in scan_source(tmp_path, """
+        def test_cmp(mock_a):
+            assert mock_a.return_value == 42
+    """)
+
+
+def test_c55_both_children_of_one_mock_fires(tmp_path):
+    assert "C55" in scan_source(tmp_path, """
+        def test_cmp(mock_client):
+            assert mock_client.foo == mock_client.bar
+    """)
