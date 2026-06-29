@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-06-29
+
+### Added
+- Complete "Usage and configuration reference" section in the README (install channels, every output format with real samples, configuration, exit codes, CI integration).
+
+### Fixed
+- Pre-commit `rev` pins in the README updated to the current release.
+
 ## [0.9.0] - 2026-06-29
 
 ### Added
