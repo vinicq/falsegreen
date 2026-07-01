@@ -4388,3 +4388,45 @@ def test_c59_clean_when_asserted(tmp_path):
             assert cart.total() == 100
     """)
     assert "C59" not in out
+
+
+# --- #136: has_fixture_decorator matches the leaf exactly ------------------
+
+def test_usefixtures_does_not_disable_analysis(tmp_path):
+    # @pytest.mark.usefixtures decorates a real test case. Its dotted name
+    # contains "fixture" as a substring, but the leaf is "usefixtures" — it must
+    # NOT switch analysis off. The always-true body is still C5.
+    out = scan_source(tmp_path, """
+        import pytest
+
+        @pytest.mark.usefixtures("db")
+        def test_always_true():
+            assert True
+    """)
+    assert "C5" in out
+
+
+def test_fixture_definition_is_not_analyzed_as_test(tmp_path):
+    # @pytest.fixture on a def test_* is a fixture definition, not a collected
+    # test. It must stay out of test-case analysis (no C5 for the always-true).
+    out = scan_source(tmp_path, """
+        import pytest
+
+        @pytest.fixture
+        def test_x():
+            assert True
+    """)
+    assert "C5" not in out
+    assert "C4" not in out
+
+
+def test_pytest_asyncio_fixture_leaf_matches(tmp_path):
+    # @pytest_asyncio.fixture leaf is "fixture" — still a fixture definition.
+    out = scan_source(tmp_path, """
+        import pytest_asyncio
+
+        @pytest_asyncio.fixture
+        def test_x():
+            assert True
+    """)
+    assert "C5" not in out

@@ -1580,7 +1580,7 @@ def _autouse_fixture_resets(tree, globals_):
         for d in node.decorator_list:
             if not isinstance(d, ast.Call):
                 continue
-            if "fixture" not in dotted_name(d.func):
+            if not is_fixture_decorator(d):
                 continue
             for kw in d.keywords:
                 if kw.arg == "autouse" and isinstance(kw.value, ast.Constant) \
@@ -3249,12 +3249,17 @@ def _suboptimal_assert_hint(test):
     return None
 
 
+def is_fixture_decorator(node):
+    """True if a decorator is a fixture DEFINITION marker: the leaf of its dotted
+    name is exactly `fixture` (@pytest.fixture, @fixture, @pytest_asyncio.fixture).
+    A substring check would also catch @pytest.mark.usefixtures, which decorates a
+    real test case and must NOT switch analysis off."""
+    target = node.func if isinstance(node, ast.Call) else node
+    return dotted_name(target).split(".")[-1] == "fixture"
+
+
 def has_fixture_decorator(func):
-    for d in func.decorator_list:
-        target = d.func if isinstance(d, ast.Call) else d
-        if "fixture" in dotted_name(target):
-            return True
-    return False
+    return any(is_fixture_decorator(d) for d in func.decorator_list)
 
 
 def parse_inline_ignores(source):
