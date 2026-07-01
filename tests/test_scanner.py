@@ -2375,7 +2375,11 @@ def test_c16_train_test_split_with_random_state_clean(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_c33_score_discarded_fires(tmp_path):
+    # .score() is gated on a sklearn import in the file (#137): with the import it
+    # is a real estimator score, so a discarded result still fires.
     f = _write(tmp_path / "test_c33a.py", textwrap.dedent("""
+        from sklearn.linear_model import LogisticRegression
+
         def test_model_quality(model, X_test, y_test):
             model.score(X_test, y_test)
     """))
@@ -4430,3 +4434,98 @@ def test_pytest_asyncio_fixture_leaf_matches(tmp_path):
             assert True
     """)
     assert "C5" not in out
+
+
+# --- #137: C57 configure_mock / ctor kwargs, C31/C50 delegate, C33 gate ------
+
+def test_c57_clean_when_ctor_kwarg_sets_attr(tmp_path):
+    # MagicMock(role="admin") configures role via the constructor — a real value,
+    # not an auto-created child mock. C57 must stay quiet.
+    out = scan_source(tmp_path, """
+        from unittest.mock import MagicMock
+        def test_role():
+            m = MagicMock(role="admin")
+            assert build_user(m).role == m.role
+    """)
+    assert "C57" not in out
+
+
+def test_c57_clean_when_configure_mock_sets_attr(tmp_path):
+    # m.configure_mock(role="admin") is the API-level equivalent of m.role = ...
+    out = scan_source(tmp_path, """
+        from unittest.mock import Mock
+        def test_role():
+            m = Mock()
+            m.configure_mock(role="admin")
+            assert build_user(m).role == m.role
+    """)
+    assert "C57" not in out
+
+
+def test_c57_still_fires_on_bare_mock_no_set(tmp_path):
+    # A bare Mock() with no configured attribute still auto-creates m.role.
+    assert "C57" in scan_source(tmp_path, """
+        from unittest.mock import MagicMock
+        def test_role():
+            m = MagicMock()
+            assert build_user(m).role == m.role
+    """)
+
+
+def test_c31_clean_when_output_passed_to_helper(tmp_path):
+    # readouterr() result handed to a verification helper counts as used
+    # (delegate-pattern exemption), not discarded.
+    f = _write(tmp_path / "test_c31_helper.py", textwrap.dedent("""
+        def test_output(capsys):
+            out = capsys.readouterr()
+            check_output(out)
+    """))
+    assert "C31" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c31_still_fires_when_output_discarded(tmp_path):
+    # Captured but never asserted and never passed anywhere — still C31.
+    f = _write(tmp_path / "test_c31_dead.py", textwrap.dedent("""
+        def test_output(capsys):
+            out = capsys.readouterr()
+            x = 1 + 1
+    """))
+    assert "C31" in {a.code for a in analyze_file(str(f))}
+
+
+def test_c50_clean_when_caplog_passed_to_helper(tmp_path):
+    # caplog handed to a verification helper counts as used.
+    assert "C50" not in scan_source(tmp_path, """
+        def test_log(caplog):
+            with caplog.at_level('INFO'):
+                do_work()
+            verify_logs(caplog)
+    """)
+
+
+def test_c50_still_fires_when_caplog_unread(tmp_path):
+    assert "C50" in scan_source(tmp_path, """
+        def test_log(caplog):
+            with caplog.at_level('INFO'):
+                do_work()
+    """)
+
+
+def test_c33_score_no_sklearn_is_clean(tmp_path):
+    # .score() on a domain object with no sklearn import is not a metric.
+    f = _write(tmp_path / "test_c33_game.py", textwrap.dedent("""
+        def test_game(game):
+            s = game.score()
+            print(s)
+    """))
+    assert "C33" not in {a.code for a in analyze_file(str(f))}
+
+
+def test_c33_score_with_sklearn_still_fires(tmp_path):
+    # With sklearn imported, a discarded .score() is a real metric miss.
+    f = _write(tmp_path / "test_c33_sk.py", textwrap.dedent("""
+        import sklearn
+        def test_model(model, X, y):
+            model.score(X, y)
+    """))
+    assert "C33" in {a.code for a in analyze_file(str(f))}

@@ -627,6 +627,23 @@ def file_controls_time(tree):
     return False
 
 
+def file_imports_sklearn(tree):
+    """True if the file imports sklearn. C33 flags a bare `.score()` only here:
+    `.score()` is a generic method name (a game, a TfidfVectorizer, a domain
+    object all expose one). Without a sklearn import in scope, calling it a
+    'sklearn metric' is a false positive. The named free functions
+    (accuracy_score, f1_score, ...) are unambiguous and stay ungated."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] == "sklearn":
+                    return True
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.split(".")[0] == "sklearn":
+                return True
+    return False
+
+
 def is_web_presence_operand(test):
     """A truthy operand that is the real assertion at the web/UI layer: an
     element visibility predicate (`locator.is_visible()`), an HTTP request
@@ -2045,16 +2062,70 @@ def unspecced_mock_names(func):
     return names
 
 
+_MOCK_ATTR_FACTORIES = {"Mock", "MagicMock", "AsyncMock", "NonCallableMock"}
+
+
+def names_reaching_assert_or_call(func):
+    """Names that reach a verification point: read inside an `assert` test, OR
+    passed as an argument to any Call. The Call arm is the delegate-pattern
+    exemption `shared/PROTOCOL.md` adopts for C2b — handing a captured value to a
+    verification helper (`check_output(out)`, `verify_logs(caplog)`) is a check,
+    the scanner just cannot see inside the helper. Shared by C31 (readouterr) and
+    C50 (caplog): a value that reaches neither assert nor call was truly discarded."""
+    used = set()
+    for node in ast.walk(func):
+        if isinstance(node, ast.Assert):
+            for sub in ast.walk(node.test):
+                if isinstance(sub, ast.Name):
+                    used.add(sub.id)
+        elif isinstance(node, ast.Call):
+            for arg in node.args:
+                for sub in ast.walk(arg):
+                    if isinstance(sub, ast.Name):
+                        used.add(sub.id)
+            for kw in node.keywords:
+                for sub in ast.walk(kw.value):
+                    if isinstance(sub, ast.Name):
+                        used.add(sub.id)
+    return used
+
+
 def _mock_attrs_explicitly_set(func):
-    """(name, attr) pairs assigned in the function body, e.g. `m.role = 3`. C57
-    must stay quiet on these: once an attribute is set, reading it is a real value,
-    not an auto-created Mock. Only one level deep (m.attr), the shape C57 inspects."""
+    """(name, attr) pairs explicitly configured in the function body. C57 must stay
+    quiet on these: once an attribute is set, reading it is a real value, not an
+    auto-created Mock. Only one level deep (m.attr), the shape C57 inspects.
+
+    Three idioms, all first-class in unittest.mock:
+      m.role = 3                    -> attribute assignment
+      m = MagicMock(role="admin")   -> constructor kwargs (bar reserved spec=/wraps=)
+      m.configure_mock(role="admin")-> configure_mock kwargs
+    """
+    # unittest.mock ctor/configure_mock kwargs that configure the mock itself, not
+    # a child attribute of the same name. side_effect is special (C6c territory).
+    reserved = {"spec", "spec_set", "wraps", "name", "side_effect", "return_value"}
     pairs = set()
     for n in children_no_nesting(func):
         if isinstance(n, ast.Assign):
             for t in n.targets:
                 if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name):
                     pairs.add((t.value.id, t.attr))
+            # m = MagicMock(role="admin"): each attribute kwarg is an explicit set.
+            if isinstance(n.value, ast.Call) \
+                    and dotted_name(n.value.func).split(".")[-1] in _MOCK_ATTR_FACTORIES:
+                for t in n.targets:
+                    if isinstance(t, ast.Name):
+                        for kw in n.value.keywords:
+                            if kw.arg and kw.arg not in reserved:
+                                pairs.add((t.id, kw.arg))
+        # m.configure_mock(role="admin"): each attribute kwarg is an explicit set.
+        elif isinstance(n, ast.Expr) and isinstance(n.value, ast.Call) \
+                and isinstance(n.value.func, ast.Attribute) \
+                and n.value.func.attr == "configure_mock" \
+                and isinstance(n.value.func.value, ast.Name):
+            name = n.value.func.value.id
+            for kw in n.value.keywords:
+                if kw.arg and kw.arg not in reserved:
+                    pairs.add((name, kw.arg))
     return pairs
 
 
@@ -2363,7 +2434,8 @@ def looks_like_forgotten_nested_test(func, scope):
 
 def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                      file_layer="logic", controls_time=False, long_test_threshold=50,
-                     inline_setup_threshold=5, async_names=frozenset()):
+                     inline_setup_threshold=5, async_names=frozenset(),
+                     imports_sklearn=False):
     line = func.lineno
     mock_names = gather_mock_names(func)
     _unspecced_mocks = unspecced_mock_names(func)
@@ -2928,6 +3000,9 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
         for sub in ast.walk(node.test)
         if isinstance(sub, ast.Name)
     }
+    # C31/C50 also honor the delegate-pattern exemption: a captured value handed to
+    # a helper call counts as used, not discarded (see names_reaching_assert_or_call).
+    _used_names = names_reaching_assert_or_call(func)
     for n in children_no_nesting(func):
         if isinstance(n, ast.Expr) \
                 and isinstance(n.value, ast.Call) \
@@ -2947,7 +3022,7 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                     for elt in tgt.elts:
                         if isinstance(elt, ast.Name):
                             names.add(elt.id)
-            if names and not (names & _assert_names):
+            if names and not (names & _used_names):
                 findings.append(Finding(file, n.lineno, "C31",
                                         "readouterr() result captured but never asserted"))
 
@@ -2955,17 +3030,10 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
     # Two shapes: `with self.assertLogs(...) as cm` where cm is never read in any
     # assertion, or `with caplog.at_level(...)` / a `caplog`-rooted read where the
     # caplog fixture name never reaches an assertion. The capture has no effect on
-    # pass/fail. _assert_names only covers `assert` statements, so also gather names
-    # read inside xunit assert* / mock-assert calls (assertLogs is xunit-style).
-    _assert_read_names = set(_assert_names)
-    for node in children_no_nesting(func):
-        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
-            callee = node.value.func
-            last = dotted_name(callee).split(".")[-1] if callee is not None else ""
-            if last.startswith("assert") or is_xunit_assert_call(node.value):
-                for sub in ast.walk(node.value):
-                    if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
-                        _assert_read_names.add(sub.id)
+    # pass/fail. _used_names covers assert tests plus any name passed to a Call
+    # (xunit assert*, mock-asserts, and verification helpers via the delegate
+    # exemption), so a caplog handed to verify_logs(caplog) counts as read.
+    _assert_read_names = _used_names
     for n in children_no_nesting(func):
         if not isinstance(n, ast.With):
             continue
@@ -2998,6 +3066,10 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
     # the test passes regardless of the model's actual performance — a model with
     # 10% accuracy passes as easily as one with 95%. Two patterns: result
     # discarded entirely (bare Expr), or assigned to a name never used in assert.
+    # The generic `.score()` method only counts when the file imports sklearn
+    # (imports_sklearn); otherwise it is an ordinary method (game.score(),
+    # vectorizer.score()) and flagging it is a false positive. The named free
+    # functions stay ungated — their names are unambiguously sklearn.
     for n in children_no_nesting(func):
         _is_metric_call = False
         if isinstance(n.value if isinstance(n, (ast.Expr, ast.Assign)) else n, ast.Call):
@@ -3006,7 +3078,8 @@ def analyze_function(func, file, findings, in_class=False, skip_exempt=False,
                 func_name = dotted_name(call_node.func).split(".")[-1]
                 is_method = isinstance(call_node.func, ast.Attribute)
                 if func_name in ML_METRIC_FUNCTIONS or \
-                        (is_method and func_name in ML_SCORE_METHODS):
+                        (is_method and func_name in ML_SCORE_METHODS
+                         and imports_sklearn):
                     _is_metric_call = True
         if not _is_metric_call:
             continue
@@ -3303,6 +3376,7 @@ def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
     layer = detect_file_layer(tree)
     level = detect_pyramid_level(tree)
     time_controlled = file_controls_time(tree)
+    sklearn_imported = file_imports_sklearn(tree)
     async_def_names = file_async_def_names(tree)
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -3318,7 +3392,8 @@ def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
                                  controls_time=time_controlled,
                                  long_test_threshold=long_test_threshold,
                                  inline_setup_threshold=inline_setup_threshold,
-                                 async_names=async_def_names)
+                                 async_names=async_def_names,
+                                 imports_sklearn=sklearn_imported)
             elif is_pytest_test_file(file) and looks_like_loose_test(node) \
                     and not has_fixture_decorator(node) \
                     and not is_web_route_handler(node) \
@@ -3356,7 +3431,8 @@ def analyze_file(file, long_test_threshold=50, inline_setup_threshold=5):
                                              controls_time=time_controlled,
                                              long_test_threshold=long_test_threshold,
                                              inline_setup_threshold=inline_setup_threshold,
-                                             async_names=async_def_names)
+                                             async_names=async_def_names,
+                                             imports_sklearn=sklearn_imported)
 
     # C38: two test functions/methods in the same scope share a name. Python
     # binds the later def over the earlier, so the first test silently never runs
