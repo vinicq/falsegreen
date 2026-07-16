@@ -368,7 +368,7 @@ jobs:
 
 ```yaml
   - repo: https://github.com/vinicq/falsegreen
-    rev: v0.9.1          # pin a tag; run `pre-commit autoupdate` to move it
+    rev: v0.9.2          # pin a tag; run `pre-commit autoupdate` to move it
     hooks:
       - id: falsegreen
 ```
@@ -678,7 +678,7 @@ Add to `.pre-commit-config.yaml`:
 
 ```yaml
   - repo: https://github.com/vinicq/falsegreen
-    rev: v0.9.1
+    rev: v0.9.2
     hooks:
       - id: falsegreen
 ```

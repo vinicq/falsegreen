@@ -6,6 +6,28 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-07-16
+
+### Fixed
+- `C6` no longer fires on `assert <resp>.ok`, the idiomatic API/HTTP success
+  assertion (Playwright `APIResponse.ok`, `requests.Response.ok`, Selenium's
+  APIResponse `.ok` — all a 2xx bool property). The web/UI softening (issue #20)
+  keyed the presence check on the response variable's root name
+  (`WEB_OPERAND_ROOTS`), so `assert response.ok` was quiet but `assert new_issue.ok`
+  / `assert issues.ok` — the exact form in the official Playwright API-testing docs —
+  fired a false positive. The softening now anchors on the `.ok` attribute form,
+  not the variable name, and stays gated to web/browser context (an `assert x.ok`
+  at unit level still fires `C6`). Confirmed against real-world Playwright API test
+  suites. Anchored on the `ast.Attribute` node, so a bare `assert ok` (a Name) and
+  the `.ok()` call-form (a Call, `.ok` is a property) keep firing `C6`.
+- Known, bounded give-back: `assert m.ok` on a spec-less `Mock()` in a web/browser
+  test is now softened too (the auto-created attribute is truthy). This already
+  applied to `assert response.ok`; the fix only widens it to any response name.
+  Accepted under precision-over-recall — `.ok` is a real success oracle, and a
+  false positive that blocks a real API test is worse than this miss. Unlike
+  falsegreen-js (which suppresses `C6` only when it is the sole oracle), the Python
+  scanner softens `.ok` per-occurrence; the py/js behaviour gap is intentional.
+
 ## [0.9.1] - 2026-06-29
 
 ### Added
@@ -483,7 +505,8 @@ First release.
   false positives: C6 on called boolean predicates, C1 on literal-collection
   loops, and C7 on `f() is f()` (the lru_cache / singleton identity test).
 
-[Unreleased]: https://github.com/vinicq/falsegreen/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/vinicq/falsegreen/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/vinicq/falsegreen/compare/v0.9.1...v0.9.2
 [0.7.0]: https://github.com/vinicq/falsegreen/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/vinicq/falsegreen/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/vinicq/falsegreen/compare/v0.4.0...v0.5.0

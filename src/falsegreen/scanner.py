@@ -40,7 +40,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
-__version__ = "0.9.1"  # keep in lockstep with pyproject.toml (test_version_lockstep enforces it)
+__version__ = "0.9.2"  # keep in lockstep with pyproject.toml (test_version_lockstep enforces it)
 TOOL_URI = "https://github.com/vinicq/falsegreen"
 DOCS_CATALOG_URI = "https://vinicq.github.io/falsegreen-docs/catalog/python/"
 
@@ -647,8 +647,9 @@ def file_imports_sklearn(tree):
 def is_web_presence_operand(test):
     """A truthy operand that is the real assertion at the web/UI layer: an
     element visibility predicate (`locator.is_visible()`), an HTTP request
-    (`client.get(...)`), or an object rooted in a response/page/locator/element.
-    In web/browser context these are checks, not weak `something came back`."""
+    (`client.get(...)`), a response-status accessor (`resp.ok`), or an object
+    rooted in a response/page/locator/element. In web/browser context these are
+    checks, not weak `something came back`."""
     if isinstance(test, ast.Call):
         name = dotted_name(test.func)
         root, last = name.split(".")[0], name.split(".")[-1]
@@ -657,6 +658,17 @@ def is_web_presence_operand(test):
         if last in HTTP_METHODS and root in WEB_CTX_NAMES:
             return True
         return root in WEB_OPERAND_ROOTS
+    # `<resp>.ok` — the idiomatic HTTP/API success oracle (Playwright
+    # APIResponse.ok, requests.Response.ok, Selenium's APIResponse.ok are all a
+    # 2xx bool property). Recognized by the attribute FORM, not the variable's
+    # root name, so `assert new_issue.ok` softens the same as `assert resp.ok`
+    # instead of firing C6 only because the variable is not in WEB_OPERAND_ROOTS.
+    # Node-type check (not a dotted-name leaf): a bare `assert ok` is a Name, not
+    # an Attribute, so it stays weak and keeps firing C6. `.ok()` (a Call) is not
+    # reached here, so the misuse form stays flagged too. Still gated by the
+    # web/browser context check in assert_weak (this never fires at unit level).
+    if isinstance(test, ast.Attribute) and test.attr == "ok":
+        return True
     if isinstance(test, (ast.Name, ast.Attribute, ast.Subscript)):
         parts = dotted_name(test).split(".")
         return bool(parts) and parts[0] in WEB_OPERAND_ROOTS

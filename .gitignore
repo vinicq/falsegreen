@@ -10,6 +10,7 @@ dist/
 venv/
 .env
 .handoff/
+.codex-tmp-pytest/
 
 # pointer to private audit hub - never commit
 CLAUDE.local.md

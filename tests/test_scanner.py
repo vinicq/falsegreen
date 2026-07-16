@@ -643,6 +643,98 @@ def test_layer_softening_does_not_touch_c7_or_c5(tmp_path):
     assert "C7" in codes
 
 
+# --- C6: `<resp>.ok` response-status accessor is a real API/HTTP oracle ------
+# (regression: the Playwright/requests idiom `assert new_issue.ok` fired C6 only
+# because the variable name was not in WEB_OPERAND_ROOTS. Softening now anchors
+# on the `.ok` attribute FORM, not the variable root name, gated to web/browser.)
+
+def test_c6_softened_for_response_ok_arbitrary_varname(tmp_path):
+    # a1: the literal Playwright API-testing doc idiom. `.ok` is APIResponse's
+    # 2xx bool property; `new_issue`/`issues` are not in WEB_OPERAND_ROOTS, yet
+    # the assertion is the real success oracle. No C6.
+    codes = scan_source(tmp_path, """
+        from playwright.sync_api import APIRequestContext
+        def test_bug_report(api_request_context):
+            new_issue = api_request_context.post("/issues", data={})
+            assert new_issue.ok
+            issues = api_request_context.get("/issues")
+            assert issues.ok
+    """)
+    assert "C6" not in codes
+
+
+def test_c6_response_ok_still_fires_on_bare_name(tmp_path):
+    # e1 (P2 footgun guard): a bare `assert ok` is a Name, not an Attribute, so
+    # the `.ok` softening must NOT reach it — a plain guard variable named `ok`
+    # stays a weak truthiness check. This is why the anchor is the AST node type,
+    # not a dotted-name leaf `split(".")[-1] == "ok"`.
+    codes = scan_source(tmp_path, """
+        import requests
+        def test_x():
+            ok = requests.get("/x")
+            assert ok
+    """)
+    assert "C6" in codes
+
+
+def test_c6_response_ok_still_fires_on_call_form(tmp_path):
+    # e2 — locks the fix scope to Attribute-only, NOT Call. `assert x.ok()` (a
+    # Call) keeps firing C6. This pins that the fix does not soften the Call
+    # form; it is not a universal verdict that `.ok()` is always wrong for every
+    # HTTP client, only that this fix deliberately leaves the Call shape flagged.
+    codes = scan_source(tmp_path, """
+        from playwright.sync_api import APIRequestContext
+        def test_x(api_request_context):
+            new_issue = api_request_context.post("/x", data={})
+            assert new_issue.ok()
+    """)
+    assert "C6" in codes
+
+
+def test_c6_response_ok_still_fires_at_unit_level(tmp_path):
+    # c: the context gate is preserved. `assert x.ok` in a file with no web/
+    # browser import stays C6 — the `.ok` form only softens inside web/browser
+    # context, never at unit level. Guards against the fix leaking to unit tests.
+    codes = scan_source(tmp_path, """
+        def test_domain_flag():
+            obj = build_widget()
+            assert obj.ok
+    """)
+    assert "C6" in codes
+
+
+def test_c6_response_ok_softens_nested_and_subscript(tmp_path):
+    # e3: `results[0].ok` and `resp.status.ok` are ast.Attribute leaf `ok`, so
+    # the fix softens them in web/browser context. Bounded, intentional FN
+    # (a genuinely weak `.ok` on an unexpected object would be missed here) —
+    # pinned by this test so the widened surface is documented, not accidental.
+    codes = scan_source(tmp_path, """
+        from playwright.sync_api import APIRequestContext
+        def test_nested(api_request_context):
+            results = api_request_context.get("/x")
+            assert results[0].ok
+            assert results.status.ok
+    """)
+    assert "C6" not in codes
+
+
+def test_c6_legit_name_guard_still_fires_alongside_ok(tmp_path):
+    # b: the fix must not sweep a legitimate weak assert that sits next to a
+    # softened `.ok`. `assert issue` (a bare Name truthiness guard before a real
+    # equality check) keeps firing C6 even though the same test has a softened
+    # `assert new_issue.ok`.
+    codes = scan_source(tmp_path, """
+        from playwright.sync_api import APIRequestContext
+        def test_bug_report(api_request_context):
+            new_issue = api_request_context.post("/issues", data={})
+            assert new_issue.ok
+            issue = new_issue.json()
+            assert issue
+            assert issue["body"] == "x"
+    """)
+    assert "C6" in codes
+
+
 # --- #14 off-by-default infra + #13 C22 async never-awaits (The Liar) --------
 
 _C22_BAD = """
