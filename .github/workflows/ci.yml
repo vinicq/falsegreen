@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Re-verify main once a week. Checking only on push means a floating tool can
+  # break main and the badge stays green until someone happens to commit. That is
+  # how ruff 0.16 widening its defaults left main with 106 lint findings and no
+  # signal at all: there was no push, so there was no run.
+  schedule:
+    - cron: "0 6 * * 1"  # Mondays at 06:00 UTC
+  workflow_dispatch:
 
 jobs:
   test:

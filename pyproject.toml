@@ -41,3 +41,13 @@ testpaths = ["tests"]
 # examples/ holds illustrative scan targets, not runnable code: they reference
 # helpers that do not exist on purpose, so linting them only reports noise.
 extend-exclude = ["examples"]
+
+[tool.ruff.lint]
+# The lint surface is declared here instead of inherited from whatever ruff
+# happens to default to. It used to be inherited, and ruff 0.16 widened its
+# defaults: with `ruff>=0.5` unpinned, CI went from clean to 106 findings
+# (UP031, BLE001, SIM102, S112, I001, RUF022 and friends) with no commit in
+# between. These four sets are exactly what the repo was already being held to.
+# Adopting a wider set is a deliberate change with its own PR, not something a
+# dependency release decides.
+select = ["E4", "E7", "E9", "F"]
