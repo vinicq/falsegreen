@@ -14,7 +14,9 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Python 3.8 has no build for ubuntu-latest (26.04) in actions/python-versions;
+    # 24.04 still has 3.8.18, and requires-python stays ">=3.8".
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.8", "3.11", "3.13"]
